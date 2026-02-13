@@ -22,6 +22,10 @@ spec:
               value: "8000"
             - name: MLFLOW_TRACKING_URI
               value: "file:/app/mlruns"
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: "artpulse"
+            - name: MODEL_URI_FILE
+              value: "/app/artifacts/latest_model_uri.txt"
             # In a real cluster, prefer registry-based URIs:
             # - name: MODEL_URI
             #   value: "models:/artpulse/Production"
@@ -29,7 +33,7 @@ spec:
             - containerPort: 8000
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 5

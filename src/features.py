@@ -1,6 +1,7 @@
 import numpy as np
 
 LABELS = ["minimal", "neo-pop", "surreal", "monochrome", "vibrant"]
+FEATURE_ORDER = ["hue_mean", "sat_mean", "val_mean", "contrast", "edges"]
 
 def make_synthetic_dataset(n: int = 2000, seed: int = 42):
     """
