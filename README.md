@@ -1,23 +1,24 @@
 # ArtPulse - Creative MLOps Demo (MLflow + FastAPI + Docker + Kubernetes)
 
-ArtPulse is an end-to-end MLOps portfolio project that shows how to move a model from:
+ArtPulse, AI/ML modelini fikir asamasindan production'a tasima surecini gosteren ornek bir MLOps projesidir.
 
-`training -> experiment tracking -> model selection -> API serving -> containerization -> Kubernetes deployment`
+Bu repo ile su soruya net bir cevap verirsin:
 
-## Why this project matters
+"AI/ML modelini production ortaminda egittin, takip ettin, servis ettin ve deploy ettin mi?"
 
-If someone asks: "Have you deployed AI/ML models into production?"
-this repo gives a concrete answer:
+Bu projede cevap **evet**:
 
-- Multiple candidate models are trained and compared.
-- Metrics and artifacts are tracked in MLflow.
-- The best run is automatically tagged as deployment-ready.
-- A FastAPI service loads the best model and serves predictions.
-- The service is packaged with Docker and deployed to Kubernetes with probes and autoscaling.
+- Model adaylari egitilir ve karsilastirilir.
+- Tum run'lar MLflow ile izlenir.
+- En iyi model otomatik secilir (`deployment_ready=true`).
+- FastAPI ile tahmin servisi acilir.
+- Docker ve Kubernetes ile deploy edilir.
 
-## What the model predicts
+## 1) Proje ne ise yarar?
 
-ArtPulse predicts an art style/mood class from compact visual features:
+ArtPulse, goruntuye ait ozet feature'lardan sanat stili/mood etiketi tahmin eder.
+
+Feature'lar:
 
 - `hue_mean`
 - `sat_mean`
@@ -25,7 +26,7 @@ ArtPulse predicts an art style/mood class from compact visual features:
 - `contrast`
 - `edges`
 
-Output labels:
+Etiketler:
 
 - `minimal`
 - `neo-pop`
@@ -33,167 +34,180 @@ Output labels:
 - `monochrome`
 - `vibrant`
 
-V1 uses synthetic data for reproducible demos. You can later replace the synthetic feature generator with real image feature extraction.
+Not: V1 surumu sentetik veri kullanir. Sonraki asamada gercek image pipeline eklenebilir.
 
-## Architecture
-
-```text
-Training (src.train)
-  |- train 3 candidate models
-  |- log runs/metrics/models to MLflow
-  |- choose best by f1_macro
-  |- tag best run: deployment_ready=true
-  v
-MLflow Tracking (mlruns)
-  |- experiment history
-  |- model artifacts
-  v
-Serving (src.serve / FastAPI)
-  |- discover best model URI
-  |- load model via MLflow pyfunc
-  |- expose /health /ready /metadata /predict
-  v
-Docker
-  |- build image
-  |- bootstrap model during build
-  v
-Kubernetes
-  |- Deployment + Service + HPA
-```
-
-## Repository structure
+## 2) Mimari akis
 
 ```text
-src/
-  features.py     # synthetic dataset + shared feature schema
-  train.py        # train/compare/log candidate models
-  serve.py        # FastAPI inference service
-k8s/
-  namespace.yaml
-  deployment.yaml
-  service.yaml
-  hpa.yaml
-tests/
-  test_api.py
+train.py
+  -> 3 model adayi egitimi
+  -> MLflow run + metric + artifact loglama
+  -> en iyi modeli secme
+  -> artifacts/latest_model_uri.txt yazma
+
+serve.py
+  -> en iyi modeli bulup yukleme
+  -> /health /ready /metadata /predict endpointleri
+
 Dockerfile
-Makefile
-requirements.txt
+  -> image build asamasinda model bootstrap egitimi
+
+k8s/*.yaml
+  -> Deployment + Service + HPA
 ```
 
-## Local setup
+## 3) Hizli baslangic (5-10 dakika)
+
+### Kurulum
 
 ```bash
 make install
 ```
 
-## Train and track models
+### Tek komut demo (egitim + ornek tahmin)
+
+```bash
+make demo
+```
+
+Bu komut:
+
+- 3 modeli egitir (`logistic_regression`, `random_forest`, `hist_gradient_boosting`)
+- En iyi modeli secer
+- Ornek satirlar uzerinde tahmin yapar
+- Sonuclari `artifacts/example_predictions.json` icine yazar
+
+### Son ornek calisma sonucu (2026-02-13, `--n-samples 2000 --seed 42`)
+
+Asagidaki metrikler bu repoda alinmis guncel bir ornek ciktidir (run id her calistirmada degisir):
+
+- `hist_gradient_boosting`: `f1_macro=0.9179`, `accuracy=0.9325` (best)
+- `random_forest`: `f1_macro=0.9179`, `accuracy=0.9350`
+- `logistic_regression`: `f1_macro=0.5418`, `accuracy=0.6725`
+
+## 4) Model egitimi detaylari
+
+Egitimi manuel calistirmak icin:
 
 ```bash
 make train
 ```
 
-This will:
+Alternatif kucuk dataset ile hizli test:
 
-- train `logistic_regression`, `random_forest`, `hist_gradient_boosting`
-- log all runs to MLflow
-- select best run by `f1_macro` (then `accuracy`)
-- mark best run with MLflow tag `deployment_ready=true`
-- write:
-  - `artifacts/latest_model_uri.txt`
-  - `artifacts/training_summary.json`
+```bash
+make train-small
+```
 
-Open MLflow UI:
+Uretilen dosyalar:
+
+- `artifacts/latest_model_uri.txt`
+- `artifacts/training_summary.json`
+
+MLflow UI acmak icin:
 
 ```bash
 make ui
 # http://localhost:5000
 ```
 
-## Run API locally
+## 5) API servisini kullanmak
+
+Servisi baslat:
 
 ```bash
 make serve
 # http://localhost:8000
 ```
 
-Endpoints:
+Endpointler:
 
-- `GET /health` - liveness and model load state
-- `GET /ready` - readiness (503 if model cannot be loaded)
-- `GET /metadata` - labels and feature order
-- `POST /predict` - prediction endpoint
+- `GET /health`: servis ayakta mi, model yuklendi mi
+- `GET /ready`: model hazir degilse 503 doner
+- `GET /metadata`: label + feature sirasi
+- `POST /predict`: tahmin
 
-Example prediction:
+### Ornek API istegi
 
-```bash
-make predict
-```
+Istek ornegi dosyasi:
 
-Direct request example:
+- `examples/predict_request.json`
+
+Komut:
 
 ```bash
 curl -sS -X POST "http://localhost:8000/predict" \
   -H "Content-Type: application/json" \
-  -d '{
-    "rows": [
-      {
-        "hue_mean": 0.62,
-        "sat_mean": 0.55,
-        "val_mean": 0.70,
-        "contrast": 0.40,
-        "edges": 0.12
-      }
-    ]
-  }'
+  -d @examples/predict_request.json
 ```
 
-## Run tests
+Ornek yanit dosyasi:
+
+- `examples/predict_response.json`
+
+## 6) Test
 
 ```bash
 make test
 ```
 
-Tests cover training + API health/readiness + valid/invalid prediction payloads.
+Test kapsaminda:
 
-## Docker
+- egitim pipeline smoke
+- `/health` ve `/ready`
+- gecerli/gecersiz payload kontrolu
 
-Build image:
+## 7) Docker ile calistirma
 
 ```bash
 make docker-build
-```
-
-Run container:
-
-```bash
 make docker-run
 ```
 
-Notes:
+Not:
 
-- The Docker build runs training once and stores a ready model inside the image.
-- API starts ready without external MLflow infra for demo purposes.
+- Docker image build sirasinda model bootstrap egitimi yapilir.
+- Container acildiginda API modeli direkt bulup tahmine hazir olur.
 
-## Kubernetes
-
-Apply manifests:
+## 8) Kubernetes deploy
 
 ```bash
 make k8s-apply
-```
-
-Access locally:
-
-```bash
 kubectl -n artpulse port-forward svc/artpulse 8000:80
 curl -sS http://localhost:8000/health
 ```
 
-HPA is configured in `k8s/hpa.yaml` based on CPU utilization.
+K8s tarafinda:
 
-## Production extension ideas
+- `Deployment` readiness `/ready` endpointine bakar
+- `Service` cluster icinde erisim verir
+- `HPA` CPU bazli otomatik olcekleme yapar
 
-- Replace synthetic data with real image feature extraction pipeline.
-- Move MLflow to remote backend (S3 + DB) and use Model Registry aliases.
-- Add CI/CD for image build and deployment promotion.
-- Add drift monitoring and periodic retraining automation.
+## 9) Repo yapisi
+
+```text
+src/
+  features.py      # sentetik veri + feature sozlesmesi
+  train.py         # coklu model egitimi + MLflow loglama + best model secimi
+  serve.py         # FastAPI inference servisi
+  demo.py          # tek komut E2E demo
+k8s/
+  namespace.yaml
+  deployment.yaml
+  service.yaml
+  hpa.yaml
+examples/
+  predict_request.json
+  predict_response.json
+tests/
+  test_api.py
+Dockerfile
+Makefile
+```
+
+## 10) Production'a tasimak icin sonraki adimlar
+
+- Sentetik veriyi gercek image feature pipeline ile degistir
+- MLflow'u remote backend + Model Registry alias ile kullan
+- CI/CD pipeline kur (test -> image -> deploy)
+- Drift monitoring ve periyodik retraining ekle

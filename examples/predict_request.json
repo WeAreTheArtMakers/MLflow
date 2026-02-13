@@ -1,0 +1,18 @@
+{
+  "rows": [
+    {
+      "hue_mean": 0.62,
+      "sat_mean": 0.55,
+      "val_mean": 0.70,
+      "contrast": 0.40,
+      "edges": 0.12
+    },
+    {
+      "hue_mean": 0.10,
+      "sat_mean": 0.90,
+      "val_mean": 0.85,
+      "contrast": 0.70,
+      "edges": 0.35
+    }
+  ]
+}

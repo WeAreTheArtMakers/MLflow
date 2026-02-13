@@ -6,10 +6,10 @@ UVICORN=$(VENV)/bin/uvicorn
 MLFLOW=$(VENV)/bin/mlflow
 PYTEST=$(VENV)/bin/pytest
 
-.PHONY: help venv install train train-small serve ui test predict docker-build docker-run k8s-apply clean
+.PHONY: help venv install train train-small demo serve ui test predict docker-build docker-run k8s-apply clean
 
 help:
-	@echo "Targets: venv install train train-small serve ui test predict docker-build docker-run k8s-apply clean"
+	@echo "Targets: venv install train train-small demo serve ui test predict docker-build docker-run k8s-apply clean"
 
 venv:
 	$(PYTHON) -m venv $(VENV)
@@ -23,6 +23,9 @@ train:
 
 train-small:
 	$(PY) -m src.train --n-samples 1500 --seed 7
+
+demo:
+	$(PY) -m src.demo --run-train --n-samples 3000 --seed 42
 
 serve:
 	$(UVICORN) src.serve:app --host 0.0.0.0 --port 8000

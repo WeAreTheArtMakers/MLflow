@@ -1,0 +1,11 @@
+{
+  "labels": [
+    "vibrant",
+    "monochrome"
+  ],
+  "predictions": [
+    4,
+    3
+  ],
+  "mlflow_model_uri": "runs:/fa3e3df8c92647d5a7271e2ef637a473/model"
+}
