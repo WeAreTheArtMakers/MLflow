@@ -2,43 +2,47 @@
 
 ## About
 
-ArtPulse, bir AI/ML modelini fikirden production ortamina tasiyan uçtan uca bir MLOps referans projesidir.
+ArtPulse is an end-to-end MLOps reference project that takes an AI/ML model from idea to production.
 
-Bu repo, firmalara sunulabilecek net bir teslim hikayesi verir:
+This repository demonstrates a full delivery story you can present to clients and hiring teams:
 
-- Gercek image verisinden feature extraction + model egitimi
-- MLflow ile deney takibi, metrik loglama ve model artefact yonetimi
-- Model Registry alias akisi (`challenger -> champion`) ile kontrollu model promotion
-- FastAPI ile production-ready inference API (`/predict`, `/predict-image`)
-- Docker + Kubernetes deployment
-- Drift monitoring + planli retraining otomasyonu
+- Real image feature extraction and model training
+- MLflow experiment tracking, metrics logging, and artifact management
+- Model Registry alias flow (`challenger -> champion`) for controlled promotion
+- Production-ready FastAPI inference endpoints (`/predict`, `/predict-image`)
+- Docker and Kubernetes deployment
+- Drift monitoring and scheduled retraining automation
 
-## Kim Icin?
+## Turkish Documentation
 
-Bu proje su profillere hitap eder:
+If you prefer Turkish documentation, see:
 
-- "Modeli sadece egitmek degil, production'a almak" isteyen sirketler
-- MLOps altyapisini hizli MVP olarak kurmak isteyen ekipler
-- Teknik portfolio/teklif dosyasinda somut bir production ornegi gostermek isteyen bireysel uzmanlar
+- `docs/README_TR.md`
 
-## Firmalara Sunumda Kisa Deger Onermesi
+## Who This Is For
 
-"ArtPulse ile bir modelin sadece dogruluk metriklerini degil, deployment, versiyonlama, rollback/promotion ve operasyonel izleme adimlarini da calisan bir akista teslim ediyorum."
+- Companies that need production ML, not just notebook experiments
+- Teams building an MVP MLOps platform quickly
+- Individual engineers building a strong technical portfolio for client work
 
-## 1) Ne Cozuluyor?
+## Value Proposition (Client-Facing)
 
-Bu repo su sorulara dogrudan cevap verir:
+"With ArtPulse, I deliver not only model accuracy but also deployment, versioning, promotion/rollback, and operational monitoring in a working production pipeline."
 
-- "Gercek veriden model egitimi yaptin mi?"
-- "Modeli registry alias ile production'a promote ettin mi?"
-- "CI/CD ile image build + deployment promotion yapiyor musun?"
-- "Drift izleyip periyodik retraining yapiyor musun?"
+## What Problems This Solves
 
-Cevap: evet, bu repoda hepsi var.
+This project directly answers:
 
-## 2) Model Ozeti
+- Did you train models on real data?
+- Can you promote models with registry aliases in production?
+- Do you have CI/CD for build and deployment promotion?
+- Do you monitor drift and support periodic retraining?
 
-Model, goruntuden cikarilan 5 ozet feature uzerinden sinif tahmini yapar:
+Yes - all are implemented here.
+
+## Model Summary
+
+The model predicts an art style label from 5 compact visual features:
 
 - `hue_mean`
 - `sat_mean`
@@ -46,7 +50,7 @@ Model, goruntuden cikarilan 5 ozet feature uzerinden sinif tahmini yapar:
 - `contrast`
 - `edges`
 
-Etiketler:
+Labels:
 
 - `minimal`
 - `neo-pop`
@@ -54,39 +58,39 @@ Etiketler:
 - `monochrome`
 - `vibrant`
 
-## 3) Hemen Basla
+## Quick Start
 
 ```bash
 cd /path/to/MLflow
 make install
 ```
 
-### 3.1 Sentetik veri ile hizli demo
+### Synthetic quick demo
 
 ```bash
 make demo
 ```
 
-### 3.2 Gercek image pipeline ile demo
+### Real image pipeline demo
 
 ```bash
 make demo-image
 ```
 
-Bu komutlar:
+These commands:
 
-- modeli egitir
-- MLflow'a run/metric/artifact yazar
-- en iyi modeli secer
-- `artifacts/training_summary.json` ve `artifacts/example_predictions.json` uretir
+- train multiple candidate models
+- log metrics/artifacts to MLflow
+- select and mark the best model
+- generate `artifacts/training_summary.json` and `artifacts/example_predictions.json`
 
-## 4) Gercek Image Pipeline
+## Real Image Pipeline
 
-### 4.1 Dataset formati
+### Dataset layout
 
-`examples/image_dataset_layout.txt` dosyasindaki klasor yapisini kullan.
+Use `examples/image_dataset_layout.txt` as the expected folder structure.
 
-Beklenen sinif klasorleri:
+Required class folders:
 
 - `minimal`
 - `neo-pop`
@@ -94,23 +98,23 @@ Beklenen sinif klasorleri:
 - `monochrome`
 - `vibrant`
 
-### 4.2 Ornek dataset uret (local test icin)
+### Generate local sample dataset
 
 ```bash
 make generate-images
 ```
 
-Varsayilan cikti:
+Default output:
 
 - `data/images/<label>/*.png`
 
-### 4.3 Real image train calistir
+### Train with real images
 
 ```bash
 make train-images
 ```
 
-Manuel komut:
+Manual command:
 
 ```bash
 .venv/bin/python -m src.train \
@@ -121,13 +125,13 @@ Manuel komut:
   --model-alias champion
 ```
 
-## 5) Remote MLflow + Model Registry Alias
+## Remote MLflow + Model Registry Alias
 
-Remote ortam icin ornek env dosyasi:
+Example environment template:
 
 - `examples/remote_env.example`
 
-Ornek kullanim:
+Example usage:
 
 ```bash
 export MLFLOW_TRACKING_URI="http://mlflow.example.com"
@@ -136,34 +140,34 @@ export MODEL_NAME="artpulse-classifier"
 export MODEL_ALIAS="champion"
 ```
 
-### 5.1 Alias ile model yukleme (API)
+### Load model by alias in API
 
 ```bash
 export USE_MODEL_REGISTRY_ALIAS=true
 make serve
 ```
 
-Bu durumda API su URI'den model yukler:
+Model URI in this mode:
 
 - `models:/artpulse-classifier@champion`
 
-### 5.2 Alias promotion
+### Promote alias
 
 ```bash
 make promote-alias
 ```
 
-Bu komut `challenger -> champion` promotion yapar.
+Promotes `challenger -> champion`.
 
-## 6) API Kullanim
+## API Usage
 
-Servisi baslat:
+Start service:
 
 ```bash
 make serve
 ```
 
-Endpointler:
+Endpoints:
 
 - `GET /health`
 - `GET /ready`
@@ -172,56 +176,49 @@ Endpointler:
 - `POST /predict` (tabular)
 - `POST /predict-image` (base64 image payload)
 
-Tabular tahmin:
+Requests:
 
 ```bash
 make predict
-```
-
-Image tahmin (datasetten bir dosya ile):
-
-```bash
 make predict-image
 ```
 
-Tahmin event log dosyasi:
+Prediction event log:
 
 - `artifacts/prediction_events.jsonl`
 
-## 7) Drift Monitoring + Retraining
+## Drift Monitoring + Retraining
 
-Drift raporu uret:
+Generate drift report:
 
 ```bash
 make monitor-drift
 ```
 
-Rapor:
+Output:
 
 - `artifacts/drift_report.json`
 
-Periyodik retraining komutu:
+Run periodic retraining job:
 
 ```bash
 make retrain
 ```
 
-Bu job en iyi modeli `challenger` alias'i ile kaydedebilir; sonra production promotion icin `make promote-alias` kullanilir.
+## CI/CD Workflows
 
-## 8) CI/CD Workflows
+In `.github/workflows/`:
 
-`.github/workflows/` altinda:
-
-- `ci.yml`: test + synthetic train + image train smoke
+- `ci.yml`: tests + synthetic/image training smoke checks
 - `build-image.yml`: GHCR image build/push
-- `deploy-promotion.yml`: model alias promotion + k8s image rollout
-- `retrain.yml`: schedule/manual retrain pipeline
+- `deploy-promotion.yml`: model alias promotion + k8s rollout
+- `retrain.yml`: scheduled/manual drift + retrain pipeline
 
-Guvenli GitHub secret/variable kurulumu icin:
+For secure GitHub secrets/variables setup:
 
 - `docs/GITHUB_SECURE_SETUP.md`
 
-## 9) Docker ve Kubernetes
+## Docker and Kubernetes
 
 Docker:
 
@@ -238,66 +235,69 @@ kubectl -n artpulse port-forward svc/artpulse 8000:80
 curl -sS http://localhost:8000/health
 ```
 
-`k8s/deployment.yaml` icinde registry alias env'leri hazirdir:
+## Extended Project Scope (Added)
 
-- `USE_MODEL_REGISTRY_ALIAS`
-- `MODEL_NAME`
-- `MODEL_ALIAS`
+The following services are now part of the project offering roadmap:
 
-## 10) Bu Projeyi Kisisel Marketing Icin Nasil Konumlandirabilirsin?
+- New data collection infrastructure setup
+- Frontend productization (dashboard/UI layer)
+- Long-term 24/7 operational NOC/SRE service model
 
-Portfolio/CV/GitHub profilinde su sekilde konumlandir:
+## Portfolio Positioning
 
-- Rol: "ML Engineer / MLOps Engineer"
-- Odak: "Model lifecycle ownership (train -> registry -> deploy -> monitor)"
-- Somut teslimler: "API, container, Kubernetes rollout, drift raporu, retraining workflow"
+Recommended positioning for CV/portfolio/GitHub profile:
 
-Onerilen 3 kisalik tanitim cümlesi:
+- Role: `ML Engineer / MLOps Engineer`
+- Focus: `Model lifecycle ownership (train -> registry -> deploy -> monitor)`
+- Deliverables: `API, containerization, Kubernetes rollout, drift reporting, retraining automation`
 
-1. "Real-image classification pipeline'i production-ready MLOps akisiyla teslim ettim."
-2. "MLflow Model Registry alias stratejisiyle kontrollu model promotion kurdum."
-3. "Drift monitoring ve retraining otomasyonuyla operasyonel sureklilik sagladim."
+Suggested one-liners:
 
-## 11) Firmalara Sunarken Gelistirme Onerileri (Roadmap)
+1. "Delivered a real-image classification pipeline with production-ready MLOps architecture."
+2. "Implemented controlled model promotion using MLflow Model Registry aliases."
+3. "Enabled operational continuity with drift monitoring and retraining automation."
 
-### Faz 1 - Hemen ticari deger (1-2 hafta)
+## Client-Facing Development Recommendations
 
-- Gercek musteri datasina bagli veri dogrulama kurallari
-- API auth/rate-limit (JWT + gateway)
+### Phase 1 - Immediate business value (1-2 weeks)
+
+- Domain-specific data validation rules
+- API auth and rate limiting (JWT + gateway)
 - SLO/SLI dashboard (latency, error rate, model freshness)
 
-### Faz 2 - Kurumsal olceklendirme (2-4 hafta)
+### Phase 2 - Enterprise scaling (2-4 weeks)
 
 - Canary/A-B model rollout
-- Feature store entegrasyonu
-- Otomatik evaluation gate (promotion oncesi kalite esikleri)
+- Feature store integration
+- Automated quality gates before promotion
 
-### Faz 3 - Regulated / enterprise readiness (4+ hafta)
+### Phase 3 - Enterprise operations (4+ weeks)
 
-- Audit trail + lineage raporlama
-- PII governance ve data retention policy
+- Audit trail and lineage reporting
+- PII governance and retention policies
 - On-prem / VPC deployment blueprint
+- 24/7 NOC/SRE runbook and on-call model
 
-## 12) Onemli Dosyalar
+## Important Files
 
 ```text
 src/features.py               # synthetic + real image feature extraction
-src/generate_image_dataset.py # local real-image style sample dataset uretici
-src/train.py                  # train, compare, registry alias kayit
+src/generate_image_dataset.py # sample real-image style dataset generator
+src/train.py                  # train, compare, registry registration
 src/serve.py                  # API, image prediction, event logging
-src/monitor_drift.py          # drift report uretimi
-src/retrain_job.py            # periyodik retraining job
-src/model_registry.py         # alias promotion yardimci komutlari
+src/monitor_drift.py          # drift report generation
+src/retrain_job.py            # periodic retraining job
+src/model_registry.py         # alias promotion utilities
 ```
 
-## 13) Dogrulama
+## Validation
 
 ```bash
 make test
 ```
 
-Testler sunlari kapsar:
+Coverage includes:
 
 - API health/readiness/predict/predict-image
 - real image dataset extraction
-- image dataset ile train akisi
+- image-based training flow
