@@ -1,20 +1,36 @@
 # ArtPulse - Real Image MLOps Demo (MLflow + FastAPI + Docker + Kubernetes)
 
-ArtPulse, bir ML modelini **egitim -> izleme -> model secimi -> servis -> container -> k8s deploy** akisiyla production'a tasimak icin hazirlanmis ornek bir MLOps projesidir.
+## About
 
-Bu surumda artik sadece sentetik veri yok:
+ArtPulse, bir AI/ML modelini fikirden production ortamina tasiyan uçtan uca bir MLOps referans projesidir.
 
-- Gercek image klasorlerinden feature extraction yapar.
-- En iyi modeli MLflow Model Registry'ye kaydedip alias (`challenger/champion`) yonetebilir.
-- API hem tabular feature hem de dogrudan image upload ile tahmin yapar.
-- Drift raporu uretir ve periyodik retraining workflow'u vardir.
+Bu repo, firmalara sunulabilecek net bir teslim hikayesi verir:
+
+- Gercek image verisinden feature extraction + model egitimi
+- MLflow ile deney takibi, metrik loglama ve model artefact yonetimi
+- Model Registry alias akisi (`challenger -> champion`) ile kontrollu model promotion
+- FastAPI ile production-ready inference API (`/predict`, `/predict-image`)
+- Docker + Kubernetes deployment
+- Drift monitoring + planli retraining otomasyonu
+
+## Kim Icin?
+
+Bu proje su profillere hitap eder:
+
+- "Modeli sadece egitmek degil, production'a almak" isteyen sirketler
+- MLOps altyapisini hizli MVP olarak kurmak isteyen ekipler
+- Teknik portfolio/teklif dosyasinda somut bir production ornegi gostermek isteyen bireysel uzmanlar
+
+## Firmalara Sunumda Kisa Deger Onermesi
+
+"ArtPulse ile bir modelin sadece dogruluk metriklerini degil, deployment, versiyonlama, rollback/promotion ve operasyonel izleme adimlarini da calisan bir akista teslim ediyorum."
 
 ## 1) Ne Cozuluyor?
 
 Bu repo su sorulara dogrudan cevap verir:
 
 - "Gercek veriden model egitimi yaptin mi?"
-- "Modeli registry alias ile promote edip production'a aldin mi?"
+- "Modeli registry alias ile production'a promote ettin mi?"
 - "CI/CD ile image build + deployment promotion yapiyor musun?"
 - "Drift izleyip periyodik retraining yapiyor musun?"
 
@@ -228,7 +244,41 @@ curl -sS http://localhost:8000/health
 - `MODEL_NAME`
 - `MODEL_ALIAS`
 
-## 10) Onemli Dosyalar
+## 10) Bu Projeyi Kisisel Marketing Icin Nasil Konumlandirabilirsin?
+
+Portfolio/CV/GitHub profilinde su sekilde konumlandir:
+
+- Rol: "ML Engineer / MLOps Engineer"
+- Odak: "Model lifecycle ownership (train -> registry -> deploy -> monitor)"
+- Somut teslimler: "API, container, Kubernetes rollout, drift raporu, retraining workflow"
+
+Onerilen 3 kisalik tanitim cümlesi:
+
+1. "Real-image classification pipeline'i production-ready MLOps akisiyla teslim ettim."
+2. "MLflow Model Registry alias stratejisiyle kontrollu model promotion kurdum."
+3. "Drift monitoring ve retraining otomasyonuyla operasyonel sureklilik sagladim."
+
+## 11) Firmalara Sunarken Gelistirme Onerileri (Roadmap)
+
+### Faz 1 - Hemen ticari deger (1-2 hafta)
+
+- Gercek musteri datasina bagli veri dogrulama kurallari
+- API auth/rate-limit (JWT + gateway)
+- SLO/SLI dashboard (latency, error rate, model freshness)
+
+### Faz 2 - Kurumsal olceklendirme (2-4 hafta)
+
+- Canary/A-B model rollout
+- Feature store entegrasyonu
+- Otomatik evaluation gate (promotion oncesi kalite esikleri)
+
+### Faz 3 - Regulated / enterprise readiness (4+ hafta)
+
+- Audit trail + lineage raporlama
+- PII governance ve data retention policy
+- On-prem / VPC deployment blueprint
+
+## 12) Onemli Dosyalar
 
 ```text
 src/features.py               # synthetic + real image feature extraction
@@ -240,7 +290,7 @@ src/retrain_job.py            # periyodik retraining job
 src/model_registry.py         # alias promotion yardimci komutlari
 ```
 
-## 11) Dogrulama
+## 13) Dogrulama
 
 ```bash
 make test
