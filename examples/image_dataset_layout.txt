@@ -1,0 +1,16 @@
+Expected real image dataset layout:
+
+<data_root>/
+  minimal/
+    img001.jpg
+    img002.png
+  neo-pop/
+    img001.jpg
+  surreal/
+    img001.jpg
+  monochrome/
+    img001.jpg
+  vibrant/
+    img001.jpg
+
+Only these class names are used by the trainer.

@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 mlruns/
 artifacts/
+data/images/
 dist/
 build/
 .env

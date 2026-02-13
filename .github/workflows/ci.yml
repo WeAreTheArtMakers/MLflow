@@ -12,5 +12,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - run: python3 -m src.train
+      - run: python3 -m src.train --n-samples 1500 --seed 7 --output-dir artifacts
+      - run: python3 -m src.generate_image_dataset --output-dir data/images --images-per-label 10 --image-size 96 --seed 42
+      - run: python3 -m src.train --dataset-type image --dataset-dir data/images --min-images-per-label 5 --seed 7 --output-dir artifacts
       - run: pytest -q

@@ -1,9 +1,12 @@
 import importlib
 import os
 from pathlib import Path
+from io import BytesIO
+import base64
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from src.train import train_models
 
@@ -96,3 +99,23 @@ def test_predict_invalid_payload(api_client):
     }
     resp = api_client.post("/predict", json=payload)
     assert resp.status_code == 422
+
+
+def test_predict_image(api_client):
+    image = Image.new("RGB", (96, 96), (240, 80, 90))
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+
+    encoded = base64.b64encode(buf.getvalue()).decode("utf-8")
+    resp = api_client.post("/predict-image", json={"image_base64": encoded})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert "label" in payload
+    assert "features" in payload
+    assert set(payload["features"].keys()) == {
+        "hue_mean",
+        "sat_mean",
+        "val_mean",
+        "contrast",
+        "edges",
+    }

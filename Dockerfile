@@ -20,8 +20,13 @@ RUN python -m src.train \
     --output-dir /app/artifacts
 
 ENV MLFLOW_TRACKING_URI=file:/app/mlruns \
+    MLFLOW_REGISTRY_URI= \
     MLFLOW_EXPERIMENT_NAME=artpulse \
     MODEL_URI_FILE=/app/artifacts/latest_model_uri.txt \
+    USE_MODEL_REGISTRY_ALIAS=false \
+    MODEL_NAME=artpulse-classifier \
+    MODEL_ALIAS=champion \
+    PREDICTION_LOG_PATH=/app/artifacts/prediction_events.jsonl \
     PORT=8000
 
 EXPOSE 8000

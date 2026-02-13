@@ -26,6 +26,14 @@ spec:
               value: "artpulse"
             - name: MODEL_URI_FILE
               value: "/app/artifacts/latest_model_uri.txt"
+            - name: USE_MODEL_REGISTRY_ALIAS
+              value: "false"
+            - name: MODEL_NAME
+              value: "artpulse-classifier"
+            - name: MODEL_ALIAS
+              value: "champion"
+            - name: PREDICTION_LOG_PATH
+              value: "/app/artifacts/prediction_events.jsonl"
             # In a real cluster, prefer registry-based URIs:
             # - name: MODEL_URI
             #   value: "models:/artpulse/Production"

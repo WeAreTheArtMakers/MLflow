@@ -1,0 +1,59 @@
+name: Drift Monitor And Retrain
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * 1"
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - run: pip install awscli
+
+      - name: Optional dataset sync from S3
+        if: ${{ secrets.S3_DATASET_URI != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          mkdir -p data/images
+          aws s3 sync "${{ secrets.S3_DATASET_URI }}" data/images
+
+      - name: Optional prediction log sync from S3
+        if: ${{ secrets.S3_PREDICTION_LOG_URI != '' }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        run: |
+          mkdir -p artifacts
+          aws s3 cp "${{ secrets.S3_PREDICTION_LOG_URI }}" artifacts/prediction_events.jsonl
+
+      - name: Build drift report
+        run: |
+          python3 -m src.monitor_drift \
+            --training-summary artifacts/training_summary.json \
+            --prediction-log artifacts/prediction_events.jsonl \
+            --output artifacts/drift_report.json || true
+
+      - name: Retrain and register challenger alias
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_REGISTRY_URI: ${{ secrets.MLFLOW_REGISTRY_URI }}
+          MODEL_NAME: ${{ vars.MODEL_NAME || 'artpulse-classifier' }}
+        run: |
+          python3 -m src.retrain_job \
+            --tracking-uri "$MLFLOW_TRACKING_URI" \
+            --registry-uri "$MLFLOW_REGISTRY_URI" \
+            --experiment-name artpulse \
+            --dataset-dir data/images \
+            --register-best \
+            --model-name "$MODEL_NAME" \
+            --model-alias challenger

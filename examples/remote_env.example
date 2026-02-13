@@ -1,0 +1,13 @@
+# Remote MLflow tracking + registry configuration example
+MLFLOW_TRACKING_URI=http://mlflow.example.com
+MLFLOW_REGISTRY_URI=http://mlflow.example.com
+MLFLOW_EXPERIMENT_NAME=artpulse
+
+# Model registry alias loading in API
+USE_MODEL_REGISTRY_ALIAS=true
+MODEL_NAME=artpulse-classifier
+MODEL_ALIAS=champion
+
+# Optional runtime settings
+PREDICTION_LOG_PATH=./artifacts/prediction_events.jsonl
+IMAGE_FEATURE_SIZE=128

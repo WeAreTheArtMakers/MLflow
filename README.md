@@ -1,24 +1,28 @@
-# ArtPulse - Creative MLOps Demo (MLflow + FastAPI + Docker + Kubernetes)
+# ArtPulse - Real Image MLOps Demo (MLflow + FastAPI + Docker + Kubernetes)
 
-ArtPulse, AI/ML modelini fikir asamasindan production'a tasima surecini gosteren ornek bir MLOps projesidir.
+ArtPulse, bir ML modelini **egitim -> izleme -> model secimi -> servis -> container -> k8s deploy** akisiyla production'a tasimak icin hazirlanmis ornek bir MLOps projesidir.
 
-Bu repo ile su soruya net bir cevap verirsin:
+Bu surumda artik sadece sentetik veri yok:
 
-"AI/ML modelini production ortaminda egittin, takip ettin, servis ettin ve deploy ettin mi?"
+- Gercek image klasorlerinden feature extraction yapar.
+- En iyi modeli MLflow Model Registry'ye kaydedip alias (`challenger/champion`) yonetebilir.
+- API hem tabular feature hem de dogrudan image upload ile tahmin yapar.
+- Drift raporu uretir ve periyodik retraining workflow'u vardir.
 
-Bu projede cevap **evet**:
+## 1) Ne Cozuluyor?
 
-- Model adaylari egitilir ve karsilastirilir.
-- Tum run'lar MLflow ile izlenir.
-- En iyi model otomatik secilir (`deployment_ready=true`).
-- FastAPI ile tahmin servisi acilir.
-- Docker ve Kubernetes ile deploy edilir.
+Bu repo su sorulara dogrudan cevap verir:
 
-## 1) Proje ne ise yarar?
+- "Gercek veriden model egitimi yaptin mi?"
+- "Modeli registry alias ile promote edip production'a aldin mi?"
+- "CI/CD ile image build + deployment promotion yapiyor musun?"
+- "Drift izleyip periyodik retraining yapiyor musun?"
 
-ArtPulse, goruntuye ait ozet feature'lardan sanat stili/mood etiketi tahmin eder.
+Cevap: evet, bu repoda hepsi var.
 
-Feature'lar:
+## 2) Model Ozeti
+
+Model, goruntuden cikarilan 5 ozet feature uzerinden sinif tahmini yapar:
 
 - `hue_mean`
 - `sat_mean`
@@ -34,142 +38,179 @@ Etiketler:
 - `monochrome`
 - `vibrant`
 
-Not: V1 surumu sentetik veri kullanir. Sonraki asamada gercek image pipeline eklenebilir.
-
-## 2) Mimari akis
-
-```text
-train.py
-  -> 3 model adayi egitimi
-  -> MLflow run + metric + artifact loglama
-  -> en iyi modeli secme
-  -> artifacts/latest_model_uri.txt yazma
-
-serve.py
-  -> en iyi modeli bulup yukleme
-  -> /health /ready /metadata /predict endpointleri
-
-Dockerfile
-  -> image build asamasinda model bootstrap egitimi
-
-k8s/*.yaml
-  -> Deployment + Service + HPA
-```
-
-## 3) Hizli baslangic (5-10 dakika)
-
-### Kurulum
+## 3) Hemen Basla
 
 ```bash
+cd /Users/bg/MLflow/MLflow
 make install
 ```
 
-### Tek komut demo (egitim + ornek tahmin)
+### 3.1 Sentetik veri ile hizli demo
 
 ```bash
 make demo
 ```
 
-Bu komut:
-
-- 3 modeli egitir (`logistic_regression`, `random_forest`, `hist_gradient_boosting`)
-- En iyi modeli secer
-- Ornek satirlar uzerinde tahmin yapar
-- Sonuclari `artifacts/example_predictions.json` icine yazar
-
-### Son ornek calisma sonucu (2026-02-13, `--n-samples 2000 --seed 42`)
-
-Asagidaki metrikler bu repoda alinmis guncel bir ornek ciktidir (run id her calistirmada degisir):
-
-- `hist_gradient_boosting`: `f1_macro=0.9179`, `accuracy=0.9325` (best)
-- `random_forest`: `f1_macro=0.9179`, `accuracy=0.9350`
-- `logistic_regression`: `f1_macro=0.5418`, `accuracy=0.6725`
-
-## 4) Model egitimi detaylari
-
-Egitimi manuel calistirmak icin:
+### 3.2 Gercek image pipeline ile demo
 
 ```bash
-make train
+make demo-image
 ```
 
-Alternatif kucuk dataset ile hizli test:
+Bu komutlar:
+
+- modeli egitir
+- MLflow'a run/metric/artifact yazar
+- en iyi modeli secer
+- `artifacts/training_summary.json` ve `artifacts/example_predictions.json` uretir
+
+## 4) Gercek Image Pipeline
+
+### 4.1 Dataset formati
+
+`examples/image_dataset_layout.txt` dosyasindaki klasor yapisini kullan.
+
+Beklenen sinif klasorleri:
+
+- `minimal`
+- `neo-pop`
+- `surreal`
+- `monochrome`
+- `vibrant`
+
+### 4.2 Ornek dataset uret (local test icin)
 
 ```bash
-make train-small
+make generate-images
 ```
 
-Uretilen dosyalar:
+Varsayilan cikti:
 
-- `artifacts/latest_model_uri.txt`
-- `artifacts/training_summary.json`
+- `data/images/<label>/*.png`
 
-MLflow UI acmak icin:
+### 4.3 Real image train calistir
 
 ```bash
-make ui
-# http://localhost:5000
+make train-images
 ```
 
-## 5) API servisini kullanmak
+Manuel komut:
+
+```bash
+.venv/bin/python -m src.train \
+  --dataset-type image \
+  --dataset-dir data/images \
+  --register-best \
+  --model-name artpulse-classifier \
+  --model-alias champion
+```
+
+## 5) Remote MLflow + Model Registry Alias
+
+Remote ortam icin ornek env dosyasi:
+
+- `examples/remote_env.example`
+
+Ornek kullanim:
+
+```bash
+export MLFLOW_TRACKING_URI="http://mlflow.example.com"
+export MLFLOW_REGISTRY_URI="http://mlflow.example.com"
+export MODEL_NAME="artpulse-classifier"
+export MODEL_ALIAS="champion"
+```
+
+### 5.1 Alias ile model yukleme (API)
+
+```bash
+export USE_MODEL_REGISTRY_ALIAS=true
+make serve
+```
+
+Bu durumda API su URI'den model yukler:
+
+- `models:/artpulse-classifier@champion`
+
+### 5.2 Alias promotion
+
+```bash
+make promote-alias
+```
+
+Bu komut `challenger -> champion` promotion yapar.
+
+## 6) API Kullanim
 
 Servisi baslat:
 
 ```bash
 make serve
-# http://localhost:8000
 ```
 
 Endpointler:
 
-- `GET /health`: servis ayakta mi, model yuklendi mi
-- `GET /ready`: model hazir degilse 503 doner
-- `GET /metadata`: label + feature sirasi
-- `POST /predict`: tahmin
+- `GET /health`
+- `GET /ready`
+- `POST /reload-model`
+- `GET /metadata`
+- `POST /predict` (tabular)
+- `POST /predict-image` (base64 image payload)
 
-### Ornek API istegi
-
-Istek ornegi dosyasi:
-
-- `examples/predict_request.json`
-
-Komut:
+Tabular tahmin:
 
 ```bash
-curl -sS -X POST "http://localhost:8000/predict" \
-  -H "Content-Type: application/json" \
-  -d @examples/predict_request.json
+make predict
 ```
 
-Ornek yanit dosyasi:
-
-- `examples/predict_response.json`
-
-## 6) Test
+Image tahmin (datasetten bir dosya ile):
 
 ```bash
-make test
+make predict-image
 ```
 
-Test kapsaminda:
+Tahmin event log dosyasi:
 
-- egitim pipeline smoke
-- `/health` ve `/ready`
-- gecerli/gecersiz payload kontrolu
+- `artifacts/prediction_events.jsonl`
 
-## 7) Docker ile calistirma
+## 7) Drift Monitoring + Retraining
+
+Drift raporu uret:
+
+```bash
+make monitor-drift
+```
+
+Rapor:
+
+- `artifacts/drift_report.json`
+
+Periyodik retraining komutu:
+
+```bash
+make retrain
+```
+
+Bu job en iyi modeli `challenger` alias'i ile kaydedebilir; sonra production promotion icin `make promote-alias` kullanilir.
+
+## 8) CI/CD Workflows
+
+`.github/workflows/` altinda:
+
+- `ci.yml`: test + synthetic train + image train smoke
+- `build-image.yml`: GHCR image build/push
+- `deploy-promotion.yml`: model alias promotion + k8s image rollout
+- `retrain.yml`: schedule/manual retrain pipeline
+
+## 9) Docker ve Kubernetes
+
+Docker:
 
 ```bash
 make docker-build
 make docker-run
 ```
 
-Not:
-
-- Docker image build sirasinda model bootstrap egitimi yapilir.
-- Container acildiginda API modeli direkt bulup tahmine hazir olur.
-
-## 8) Kubernetes deploy
+Kubernetes:
 
 ```bash
 make k8s-apply
@@ -177,37 +218,32 @@ kubectl -n artpulse port-forward svc/artpulse 8000:80
 curl -sS http://localhost:8000/health
 ```
 
-K8s tarafinda:
+`k8s/deployment.yaml` icinde registry alias env'leri hazirdir:
 
-- `Deployment` readiness `/ready` endpointine bakar
-- `Service` cluster icinde erisim verir
-- `HPA` CPU bazli otomatik olcekleme yapar
+- `USE_MODEL_REGISTRY_ALIAS`
+- `MODEL_NAME`
+- `MODEL_ALIAS`
 
-## 9) Repo yapisi
+## 10) Onemli Dosyalar
 
 ```text
-src/
-  features.py      # sentetik veri + feature sozlesmesi
-  train.py         # coklu model egitimi + MLflow loglama + best model secimi
-  serve.py         # FastAPI inference servisi
-  demo.py          # tek komut E2E demo
-k8s/
-  namespace.yaml
-  deployment.yaml
-  service.yaml
-  hpa.yaml
-examples/
-  predict_request.json
-  predict_response.json
-tests/
-  test_api.py
-Dockerfile
-Makefile
+src/features.py               # synthetic + real image feature extraction
+src/generate_image_dataset.py # local real-image style sample dataset uretici
+src/train.py                  # train, compare, registry alias kayit
+src/serve.py                  # API, image prediction, event logging
+src/monitor_drift.py          # drift report uretimi
+src/retrain_job.py            # periyodik retraining job
+src/model_registry.py         # alias promotion yardimci komutlari
 ```
 
-## 10) Production'a tasimak icin sonraki adimlar
+## 11) Dogrulama
 
-- Sentetik veriyi gercek image feature pipeline ile degistir
-- MLflow'u remote backend + Model Registry alias ile kullan
-- CI/CD pipeline kur (test -> image -> deploy)
-- Drift monitoring ve periyodik retraining ekle
+```bash
+make test
+```
+
+Testler sunlari kapsar:
+
+- API health/readiness/predict/predict-image
+- real image dataset extraction
+- image dataset ile train akisi

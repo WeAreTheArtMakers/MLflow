@@ -1,0 +1,77 @@
+name: Promote Model And Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Container image tag to deploy (example: sha-abcdef0)"
+        required: true
+        type: string
+      namespace:
+        description: "Kubernetes namespace"
+        required: true
+        default: "artpulse"
+        type: string
+      deployment:
+        description: "Kubernetes deployment name"
+        required: true
+        default: "artpulse"
+        type: string
+      promote_alias:
+        description: "Promote Model Registry alias before deployment"
+        required: true
+        default: true
+        type: boolean
+      source_alias:
+        description: "Source alias"
+        required: true
+        default: "challenger"
+        type: string
+      target_alias:
+        description: "Target alias"
+        required: true
+        default: "champion"
+        type: string
+
+jobs:
+  promote-model:
+    if: ${{ inputs.promote_alias }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Promote model alias
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_REGISTRY_URI: ${{ secrets.MLFLOW_REGISTRY_URI }}
+          MODEL_NAME: ${{ vars.MODEL_NAME || 'artpulse-classifier' }}
+        run: |
+          python3 -m src.model_registry \
+            --tracking-uri "$MLFLOW_TRACKING_URI" \
+            --registry-uri "$MLFLOW_REGISTRY_URI" \
+            promote-alias \
+            --model-name "$MODEL_NAME" \
+            --source-alias "${{ inputs.source_alias }}" \
+            --target-alias "${{ inputs.target_alias }}"
+
+  deploy:
+    needs: [promote-model]
+    if: ${{ always() && (needs.promote-model.result == 'success' || needs.promote-model.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
+
+      - name: Deploy image
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/artpulse:${{ inputs.image_tag }}"
+          kubectl -n "${{ inputs.namespace }}" set image deployment/"${{ inputs.deployment }}" api="$IMAGE"
+          kubectl -n "${{ inputs.namespace }}" rollout status deployment/"${{ inputs.deployment }}" --timeout=180s
