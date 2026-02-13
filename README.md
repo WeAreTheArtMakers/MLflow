@@ -301,3 +301,7 @@ Coverage includes:
 - API health/readiness/predict/predict-image
 - real image dataset extraction
 - image-based training flow
+
+---
+
+Built with <3 WeAreTheArtMakers
