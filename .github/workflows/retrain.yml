@@ -2,12 +2,36 @@ name: Drift Monitor And Retrain
 
 on:
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "GitHub environment"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+      only_if_drift:
+        description: "Skip retraining unless drift is detected"
+        required: true
+        default: true
+        type: boolean
   schedule:
     - cron: "0 2 * * 1"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: retrain-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   retrain:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: ${{ inputs.environment || 'staging' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,28 +40,47 @@ jobs:
       - run: pip install -r requirements.txt
       - run: pip install awscli
 
-      - name: Optional dataset sync from S3
-        if: ${{ secrets.S3_DATASET_URI != '' }}
+      - name: Validate MLflow secrets
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_REGISTRY_URI: ${{ secrets.MLFLOW_REGISTRY_URI }}
         run: |
+          set -euo pipefail
+          test -n "$MLFLOW_TRACKING_URI"
+          test -n "$MLFLOW_REGISTRY_URI"
+
+      - name: Validate AWS OIDC configuration
+        if: ${{ vars.S3_DATASET_URI != '' || vars.S3_PREDICTION_LOG_URI != '' }}
+        run: |
+          set -euo pipefail
+          test -n "${{ vars.AWS_ROLE_ARN }}"
+          test -n "${{ vars.AWS_REGION }}"
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ vars.S3_DATASET_URI != '' || vars.S3_PREDICTION_LOG_URI != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: artpulse-retrain-${{ github.run_id }}
+
+      - name: Optional dataset sync from S3
+        if: ${{ vars.S3_DATASET_URI != '' }}
+        run: |
+          set -euo pipefail
           mkdir -p data/images
-          aws s3 sync "${{ secrets.S3_DATASET_URI }}" data/images
+          aws s3 sync "${{ vars.S3_DATASET_URI }}" data/images
 
       - name: Optional prediction log sync from S3
-        if: ${{ secrets.S3_PREDICTION_LOG_URI != '' }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_DEFAULT_REGION }}
+        if: ${{ vars.S3_PREDICTION_LOG_URI != '' }}
         run: |
+          set -euo pipefail
           mkdir -p artifacts
-          aws s3 cp "${{ secrets.S3_PREDICTION_LOG_URI }}" artifacts/prediction_events.jsonl
+          aws s3 cp "${{ vars.S3_PREDICTION_LOG_URI }}" artifacts/prediction_events.jsonl
 
       - name: Build drift report
         run: |
+          set -euo pipefail
           python3 -m src.monitor_drift \
             --training-summary artifacts/training_summary.json \
             --prediction-log artifacts/prediction_events.jsonl \
@@ -48,7 +91,9 @@ jobs:
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
           MLFLOW_REGISTRY_URI: ${{ secrets.MLFLOW_REGISTRY_URI }}
           MODEL_NAME: ${{ vars.MODEL_NAME || 'artpulse-classifier' }}
+          ONLY_IF_DRIFT: ${{ inputs.only_if_drift || 'true' }}
         run: |
+          set -euo pipefail
           python3 -m src.retrain_job \
             --tracking-uri "$MLFLOW_TRACKING_URI" \
             --registry-uri "$MLFLOW_REGISTRY_URI" \
@@ -56,4 +101,5 @@ jobs:
             --dataset-dir data/images \
             --register-best \
             --model-name "$MODEL_NAME" \
-            --model-alias challenger
+            --model-alias challenger \
+            $([ "$ONLY_IF_DRIFT" = "true" ] && echo "--only-if-drift" || true)

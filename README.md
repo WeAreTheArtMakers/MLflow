@@ -201,6 +201,10 @@ Bu job en iyi modeli `challenger` alias'i ile kaydedebilir; sonra production pro
 - `deploy-promotion.yml`: model alias promotion + k8s image rollout
 - `retrain.yml`: schedule/manual retrain pipeline
 
+Guvenli GitHub secret/variable kurulumu icin:
+
+- `/Users/bg/MLflow/MLflow/docs/GITHUB_SECURE_SETUP.md`
+
 ## 9) Docker ve Kubernetes
 
 Docker:
