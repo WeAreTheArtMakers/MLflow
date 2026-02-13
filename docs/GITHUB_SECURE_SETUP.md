@@ -1,6 +1,6 @@
 # Secure GitHub Secrets/Vars Setup (No Security Compromise)
 
-This document hardens GitHub Actions setup for `/Users/bg/MLflow/MLflow`.
+This document hardens GitHub Actions setup for this repository.
 
 ## Security Principles Applied
 
@@ -17,10 +17,10 @@ This document hardens GitHub Actions setup for `/Users/bg/MLflow/MLflow`.
   - `production`
 - Branch protection policy enabled on both environments (`protected_branches=true`).
 - Workflow hardening applied:
-  - `/Users/bg/MLflow/MLflow/.github/workflows/deploy-promotion.yml`
-  - `/Users/bg/MLflow/MLflow/.github/workflows/retrain.yml`
-  - `/Users/bg/MLflow/MLflow/.github/workflows/build-image.yml`
-  - `/Users/bg/MLflow/MLflow/.github/workflows/ci.yml`
+  - `.github/workflows/deploy-promotion.yml`
+  - `.github/workflows/retrain.yml`
+  - `.github/workflows/build-image.yml`
+  - `.github/workflows/ci.yml`
 
 ## 2) Required Variables/Secrets
 
@@ -58,12 +58,12 @@ gh variable set MODEL_NAME -R WeAreTheArtMakers/MLflow -b "artpulse-classifier"
 Set environment secrets (interactive):
 
 ```bash
-/Users/bg/MLflow/MLflow/scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow staging MLFLOW_TRACKING_URI
-/Users/bg/MLflow/MLflow/scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow staging MLFLOW_REGISTRY_URI
+./scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow staging MLFLOW_TRACKING_URI
+./scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow staging MLFLOW_REGISTRY_URI
 
-/Users/bg/MLflow/MLflow/scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow production MLFLOW_TRACKING_URI
-/Users/bg/MLflow/MLflow/scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow production MLFLOW_REGISTRY_URI
-/Users/bg/MLflow/MLflow/scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow production KUBE_CONFIG
+./scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow production MLFLOW_TRACKING_URI
+./scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow production MLFLOW_REGISTRY_URI
+./scripts/gh_set_secret_prompt.sh WeAreTheArtMakers/MLflow production KUBE_CONFIG
 ```
 
 Set environment vars:
@@ -89,7 +89,7 @@ gh variable set S3_PREDICTION_LOG_URI -R WeAreTheArtMakers/MLflow -e production 
 ## 4) Verify setup
 
 ```bash
-/Users/bg/MLflow/MLflow/scripts/gh_audit_config.sh WeAreTheArtMakers/MLflow
+./scripts/gh_audit_config.sh WeAreTheArtMakers/MLflow
 ```
 
 ## 5) Go live sequence
