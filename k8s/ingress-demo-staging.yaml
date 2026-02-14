@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: artpulse-demo-staging
+  namespace: artpulse
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-staging-dns
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "1"
+    nginx.ingress.kubernetes.io/whitelist-source-range: "203.0.113.0/24,198.51.100.22/32"
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.staging.wearetheartmakers.com
+      secretName: artpulse-staging-wildcard-tls
+  rules:
+    - host: api.staging.wearetheartmakers.com
+      http:
+        paths:
+          - path: /demo
+            pathType: Prefix
+            backend:
+              service:
+                name: artpulse
+                port:
+                  number: 80

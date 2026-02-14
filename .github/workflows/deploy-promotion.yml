@@ -40,6 +40,58 @@ on:
         required: true
         default: "champion"
         type: string
+      rollout_strategy:
+        description: "Traffic strategy for runtime model routing"
+        required: true
+        default: "single"
+        type: choice
+        options:
+          - single
+          - canary
+          - blue_green
+      rollout_secondary_percent:
+        description: "Percent of traffic to secondary route (0-100)"
+        required: true
+        default: "0"
+        type: string
+      candidate_alias:
+        description: "Canary candidate alias (used in canary mode)"
+        required: true
+        default: "challenger"
+        type: string
+      active_color:
+        description: "Primary color in blue/green mode"
+        required: true
+        default: "blue"
+        type: choice
+        options:
+          - blue
+          - green
+      run_quality_gate:
+        description: "Run post-deploy quality gate and rollback on failure"
+        required: true
+        default: true
+        type: boolean
+      gate_p95_ms:
+        description: "P95 latency threshold in ms"
+        required: true
+        default: "180"
+        type: string
+      gate_error_rate_max:
+        description: "Max acceptable 5xx rate"
+        required: true
+        default: "0.01"
+        type: string
+      gate_drift_score_max:
+        description: "Max acceptable drift score"
+        required: true
+        default: "2.5"
+        type: string
+      gate_min_duration_min:
+        description: "Observation window before gate (minutes)"
+        required: true
+        default: "15"
+        type: string
 
 permissions:
   contents: read
@@ -94,16 +146,25 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v4
+
       - name: Validate deployment inputs
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
           K8S_NAMESPACE: ${{ inputs.namespace }}
           K8S_DEPLOYMENT: ${{ inputs.deployment }}
+          ROLLOUT_STRATEGY: ${{ inputs.rollout_strategy }}
+          ROLLOUT_SECONDARY_PERCENT: ${{ inputs.rollout_secondary_percent }}
+          ACTIVE_COLOR: ${{ inputs.active_color }}
         run: |
           set -euo pipefail
           [[ "$IMAGE_TAG" =~ ^[A-Za-z0-9._-]+$ ]]
           [[ "$K8S_NAMESPACE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]
           [[ "$K8S_DEPLOYMENT" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]
+          [[ "$ROLLOUT_STRATEGY" =~ ^(single|canary|blue_green)$ ]]
+          [[ "$ACTIVE_COLOR" =~ ^(blue|green)$ ]]
+          [[ "$ROLLOUT_SECONDARY_PERCENT" =~ ^([0-9]{1,3})(\.[0-9]+)?$ ]]
+          awk "BEGIN { exit !($ROLLOUT_SECONDARY_PERCENT >= 0 && $ROLLOUT_SECONDARY_PERCENT <= 100) }"
 
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
@@ -123,8 +184,105 @@ jobs:
           IMAGE_TAG: ${{ inputs.image_tag }}
           K8S_NAMESPACE: ${{ inputs.namespace }}
           K8S_DEPLOYMENT: ${{ inputs.deployment }}
+          ROLLOUT_STRATEGY: ${{ inputs.rollout_strategy }}
+          ROLLOUT_SECONDARY_PERCENT: ${{ inputs.rollout_secondary_percent }}
+          CANDIDATE_ALIAS: ${{ inputs.candidate_alias }}
+          ACTIVE_COLOR: ${{ inputs.active_color }}
         run: |
           set -euo pipefail
           IMAGE="ghcr.io/${{ github.repository_owner }}/artpulse:${IMAGE_TAG}"
           kubectl -n "$K8S_NAMESPACE" set image deployment/"$K8S_DEPLOYMENT" api="$IMAGE"
+          kubectl -n "$K8S_NAMESPACE" set env deployment/"$K8S_DEPLOYMENT" \
+            ROLLOUT_MODE="$ROLLOUT_STRATEGY" \
+            CANARY_TRAFFIC_PERCENT="$ROLLOUT_SECONDARY_PERCENT" \
+            CANDIDATE_MODEL_ALIAS="$CANDIDATE_ALIAS" \
+            BLUE_GREEN_TRAFFIC_PERCENT="$ROLLOUT_SECONDARY_PERCENT" \
+            ACTIVE_COLOR="$ACTIVE_COLOR"
           kubectl -n "$K8S_NAMESPACE" rollout status deployment/"$K8S_DEPLOYMENT" --timeout=180s
+
+      - name: Resolve quality gate endpoints
+        if: ${{ inputs.run_quality_gate }}
+        id: gate_endpoints
+        env:
+          ENV_NAME: ${{ inputs.environment }}
+          STAGING_API_URL: ${{ vars.STAGING_API_URL }}
+          PROD_API_URL: ${{ vars.PROD_API_URL }}
+          STAGING_PROMETHEUS_URL: ${{ vars.STAGING_PROMETHEUS_URL }}
+          PROD_PROMETHEUS_URL: ${{ vars.PROD_PROMETHEUS_URL }}
+        run: |
+          set -euo pipefail
+          if [[ "$ENV_NAME" = "staging" ]]; then
+            API_URL="$STAGING_API_URL"
+            PROM_URL="$STAGING_PROMETHEUS_URL"
+          else
+            API_URL="$PROD_API_URL"
+            PROM_URL="$PROD_PROMETHEUS_URL"
+          fi
+          test -n "$API_URL"
+          test -n "$PROM_URL"
+          echo "api_url=$API_URL" >> "$GITHUB_OUTPUT"
+          echo "prom_url=$PROM_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for gate observation window
+        if: ${{ inputs.run_quality_gate }}
+        env:
+          GATE_MIN_DURATION_MIN: ${{ inputs.gate_min_duration_min }}
+        run: |
+          set -euo pipefail
+          [[ "$GATE_MIN_DURATION_MIN" =~ ^[0-9]+$ ]]
+          sleep "$((GATE_MIN_DURATION_MIN * 60))"
+
+      - name: Run release quality gate
+        if: ${{ inputs.run_quality_gate }}
+        id: release_gate
+        continue-on-error: true
+        env:
+          API_URL: ${{ steps.gate_endpoints.outputs.api_url }}
+          PROMETHEUS_URL: ${{ steps.gate_endpoints.outputs.prom_url }}
+          API_GATE_KEY: ${{ secrets.API_GATE_KEY }}
+          GATE_P95_MS: ${{ inputs.gate_p95_ms }}
+          GATE_ERROR_RATE_MAX: ${{ inputs.gate_error_rate_max }}
+          GATE_DRIFT_SCORE_MAX: ${{ inputs.gate_drift_score_max }}
+        run: |
+          set -euo pipefail
+          test -n "$API_GATE_KEY"
+          python3 -m src.release_gate \
+            --api-url "$API_URL" \
+            --api-key "$API_GATE_KEY" \
+            --prometheus-url "$PROMETHEUS_URL" \
+            --p95-ms "$GATE_P95_MS" \
+            --error-rate-max "$GATE_ERROR_RATE_MAX" \
+            --drift-score-max "$GATE_DRIFT_SCORE_MAX" \
+            --output artifacts/release_gate_report.json
+
+      - name: Auto rollback if quality gate failed
+        if: ${{ inputs.run_quality_gate && steps.release_gate.outcome == 'failure' }}
+        env:
+          K8S_NAMESPACE: ${{ inputs.namespace }}
+          K8S_DEPLOYMENT: ${{ inputs.deployment }}
+        run: |
+          set -euo pipefail
+          kubectl -n "$K8S_NAMESPACE" rollout undo deployment/"$K8S_DEPLOYMENT"
+          kubectl -n "$K8S_NAMESPACE" rollout status deployment/"$K8S_DEPLOYMENT" --timeout=180s
+
+      - name: Fail deployment if gate failed
+        if: ${{ inputs.run_quality_gate && steps.release_gate.outcome == 'failure' }}
+        run: |
+          echo "Release quality gate failed; deployment rolled back."
+          exit 1
+
+      - name: Optional staging smoke test
+        if: ${{ inputs.environment == 'staging' && vars.STAGING_API_URL != '' }}
+        env:
+          STAGING_API_URL: ${{ vars.STAGING_API_URL }}
+          STAGING_API_KEY: ${{ secrets.API_GATE_KEY }}
+        run: |
+          set -euo pipefail
+          curl -fsS "$STAGING_API_URL/health" >/dev/null
+          if [[ -n "${STAGING_API_KEY:-}" ]]; then
+            DEMO_TOKEN=$(curl -fsS -X POST "$STAGING_API_URL/demo/token" \
+              -H "content-type: application/json" \
+              -H "x-api-key: $STAGING_API_KEY" \
+              -d '{"subject":"workflow-smoke","ttl_seconds":300}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+            curl -fsS "$STAGING_API_URL/demo/status" -H "Authorization: Bearer $DEMO_TOKEN" >/dev/null
+          fi

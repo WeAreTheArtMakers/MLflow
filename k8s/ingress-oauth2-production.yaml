@@ -1,0 +1,61 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oauth2-proxy-production
+  namespace: artpulse
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod-dns
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.wearetheartmakers.com
+      secretName: artpulse-production-wildcard-tls
+  rules:
+    - host: api.wearetheartmakers.com
+      http:
+        paths:
+          - path: /oauth2
+            pathType: Prefix
+            backend:
+              service:
+                name: oauth2-proxy
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: admin-protected-production
+  namespace: artpulse
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod-dns
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/auth-url: "https://$host/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://$host/oauth2/start?rd=$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user,x-auth-request-email,authorization"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.wearetheartmakers.com
+      secretName: artpulse-production-wildcard-tls
+  rules:
+    - host: api.wearetheartmakers.com
+      http:
+        paths:
+          - path: /admin
+            pathType: Prefix
+            backend:
+              service:
+                name: artpulse
+                port:
+                  number: 80
+          - path: /ops/summary
+            pathType: Prefix
+            backend:
+              service:
+                name: artpulse
+                port:
+                  number: 80

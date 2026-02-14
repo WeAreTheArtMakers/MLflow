@@ -1,0 +1,13 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: artpulse-staging-wildcard
+  namespace: artpulse
+spec:
+  secretName: artpulse-staging-wildcard-tls
+  issuerRef:
+    name: letsencrypt-staging-dns
+    kind: ClusterIssuer
+  dnsNames:
+    - "api.staging.wearetheartmakers.com"
+    - "*.staging.wearetheartmakers.com"

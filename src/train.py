@@ -23,6 +23,7 @@ from src.features import (
     build_image_feature_dataset,
     make_synthetic_dataset,
 )
+from src.data_quality import QualityConfig, run_quality_checks, save_quality_report
 
 
 @dataclass
@@ -172,6 +173,10 @@ def train_models(
     model_name: str = "artpulse-classifier",
     model_alias: str = "champion",
     registry_uri: Optional[str] = None,
+    quality_checks: bool = True,
+    quality_min_samples: int = 50,
+    quality_min_per_label: int = 5,
+    quality_max_imbalance_ratio: float = 5.0,
 ) -> Dict[str, Any]:
     _apply_mlflow_uris(tracking_uri=tracking_uri, registry_uri=registry_uri)
     mlflow.set_experiment(experiment_name)
@@ -184,6 +189,23 @@ def train_models(
         image_size=image_size,
         min_images_per_label=min_images_per_label,
     )
+    quality_report: Dict[str, Any] = {}
+    if quality_checks:
+        quality_report = run_quality_checks(
+            X=X,
+            y=y,
+            feature_order=FEATURE_ORDER,
+            labels=LABELS,
+            dataset_meta=dataset_meta,
+            config=QualityConfig(
+                min_samples=quality_min_samples,
+                min_per_label=quality_min_per_label,
+                max_imbalance_ratio=quality_max_imbalance_ratio,
+            ),
+        )
+        if not quality_report.get("passed", False):
+            issues = "; ".join(quality_report.get("errors", []))
+            raise ValueError(f"Training blocked by data quality checks: {issues}")
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=seed, stratify=y
@@ -222,6 +244,13 @@ def train_models(
             mlflow.log_metric("f1_macro", f1)
             mlflow.log_dict(dataset_meta, "dataset_meta.json")
             mlflow.log_dict(train_feature_stats, "baseline_feature_stats.json")
+            if quality_report:
+                mlflow.log_dict(quality_report, "data_quality_report.json")
+                mlflow.set_tag("data_quality_passed", str(quality_report.get("passed", False)).lower())
+                mlflow.log_metric(
+                    "quality_imbalance_ratio",
+                    float(quality_report.get("summary", {}).get("imbalance_ratio", 0.0)),
+                )
 
             input_example = X_train[:5]
             signature = mlflow.models.infer_signature(
@@ -273,6 +302,8 @@ def train_models(
     (out_dir / "baseline_feature_stats.json").write_text(
         json.dumps(train_feature_stats, indent=2), encoding="utf-8"
     )
+    if quality_report:
+        save_quality_report(quality_report, out_dir / "data_quality_report.json")
 
     payload: Dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -282,6 +313,7 @@ def train_models(
         "dataset": dataset_meta,
         "feature_order": FEATURE_ORDER,
         "baseline_feature_stats": train_feature_stats,
+        "data_quality": quality_report,
         "best": asdict(best),
         "best_model_uri": preferred_model_uri,
         "registry": registry_result,
@@ -322,6 +354,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--register-best", action="store_true")
     parser.add_argument("--model-name", default=os.getenv("MODEL_NAME", "artpulse-classifier"))
     parser.add_argument("--model-alias", default=os.getenv("MODEL_ALIAS", "champion"))
+    parser.add_argument("--skip-quality-checks", action="store_true")
+    parser.add_argument("--quality-min-samples", type=int, default=50)
+    parser.add_argument("--quality-min-per-label", type=int, default=5)
+    parser.add_argument("--quality-max-imbalance-ratio", type=float, default=5.0)
     return parser.parse_args()
 
 
@@ -342,6 +378,10 @@ def main() -> None:
         register_best=args.register_best,
         model_name=args.model_name,
         model_alias=args.model_alias,
+        quality_checks=not args.skip_quality_checks,
+        quality_min_samples=args.quality_min_samples,
+        quality_min_per_label=args.quality_min_per_label,
+        quality_max_imbalance_ratio=args.quality_max_imbalance_ratio,
     )
 
     best = summary["best"]

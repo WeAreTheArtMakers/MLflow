@@ -12,6 +12,10 @@ spec:
     metadata:
       labels:
         app: artpulse
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8000"
     spec:
       containers:
         - name: api
@@ -32,8 +36,75 @@ spec:
               value: "artpulse-classifier"
             - name: MODEL_ALIAS
               value: "champion"
+            - name: ROLLOUT_MODE
+              value: "single"
+            - name: CANARY_TRAFFIC_PERCENT
+              value: "0"
+            - name: CANDIDATE_MODEL_ALIAS
+              value: "challenger"
+            - name: ACTIVE_COLOR
+              value: "blue"
+            - name: BLUE_MODEL_ALIAS
+              value: "blue"
+            - name: GREEN_MODEL_ALIAS
+              value: "green"
+            - name: BLUE_GREEN_TRAFFIC_PERCENT
+              value: "0"
+            - name: AUTH_REQUIRED
+              value: "true"
+            - name: API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: artpulse-api-secrets
+                  key: api_keys
+            - name: DEMO_ENABLED
+              value: "true"
+            - name: DEMO_JWK_CURRENT_KID
+              valueFrom:
+                secretKeyRef:
+                  name: artpulse-api-secrets
+                  key: demo_jwk_current_kid
+                  optional: true
+            - name: DEMO_JWK_KEYS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: artpulse-api-secrets
+                  key: demo_jwk_keys_json
+                  optional: true
+            - name: DEMO_TOKEN_ISSUER
+              value: "https://api.staging.wearetheartmakers.com"
+            - name: DEMO_TOKEN_AUDIENCE
+              value: "artpulse-public-demo"
+            - name: DEMO_TOKEN_TTL_SECONDS
+              value: "600"
+            - name: DEMO_RATE_LIMIT_REQUESTS
+              value: "30"
+            - name: DEMO_RATE_LIMIT_WINDOW_SECONDS
+              value: "60"
+            - name: SIEM_AUDIT_ENABLED
+              value: "true"
+            - name: SIEM_AUDIT_LOG_PATH
+              value: "/app/artifacts/siem_audit_events.jsonl"
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: artpulse-api-secrets
+                  key: jwt_secret
+                  optional: true
+            - name: JWT_ALGORITHM
+              value: "HS256"
+            - name: RATE_LIMIT_ENABLED
+              value: "true"
+            - name: RATE_LIMIT_REQUESTS
+              value: "120"
+            - name: RATE_LIMIT_WINDOW_SECONDS
+              value: "60"
             - name: PREDICTION_LOG_PATH
               value: "/app/artifacts/prediction_events.jsonl"
+            - name: TRAINING_SUMMARY_PATH
+              value: "/app/artifacts/training_summary.json"
+            - name: DRIFT_REPORT_PATH
+              value: "/app/artifacts/drift_report.json"
             # In a real cluster, prefer registry-based URIs:
             # - name: MODEL_URI
             #   value: "models:/artpulse/Production"

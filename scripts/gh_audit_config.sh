@@ -5,8 +5,9 @@ REPO="${1:-WeAreTheArtMakers/MLflow}"
 ENVS=(staging production)
 
 REPO_REQUIRED_VARS=(MODEL_NAME)
-ENV_REQUIRED_SECRETS=(MLFLOW_TRACKING_URI MLFLOW_REGISTRY_URI)
+ENV_REQUIRED_SECRETS=(MLFLOW_TRACKING_URI MLFLOW_REGISTRY_URI KUBE_CONFIG API_GATE_KEY)
 ENV_REQUIRED_VARS=(AWS_ROLE_ARN AWS_REGION)
+ENV_OPTIONAL_VARS=(S3_DATASET_URI S3_PREDICTION_LOG_URI ROLLOUT_STRATEGY_DEFAULT)
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "gh CLI is required" >&2
@@ -67,13 +68,39 @@ for env in "${ENVS[@]}"; do
     fi
   done
 
-  if [[ "$env" == "production" ]]; then
-    if has_item "$ENV_SECRETS" "KUBE_CONFIG"; then
-      echo "    OK   KUBE_CONFIG"
+  echo "  Env-specific required vars:"
+  if [[ "$env" == "staging" ]]; then
+    if has_item "$ENV_VARS" "STAGING_API_URL"; then
+      echo "    OK   STAGING_API_URL"
     else
-      echo "    MISS KUBE_CONFIG"
+      echo "    MISS STAGING_API_URL"
+    fi
+    if has_item "$ENV_VARS" "STAGING_PROMETHEUS_URL"; then
+      echo "    OK   STAGING_PROMETHEUS_URL"
+    else
+      echo "    MISS STAGING_PROMETHEUS_URL"
+    fi
+  else
+    if has_item "$ENV_VARS" "PROD_API_URL"; then
+      echo "    OK   PROD_API_URL"
+    else
+      echo "    MISS PROD_API_URL"
+    fi
+    if has_item "$ENV_VARS" "PROD_PROMETHEUS_URL"; then
+      echo "    OK   PROD_PROMETHEUS_URL"
+    else
+      echo "    MISS PROD_PROMETHEUS_URL"
     fi
   fi
+
+  echo "  Optional vars:"
+  for ov in "${ENV_OPTIONAL_VARS[@]}"; do
+    if has_item "$ENV_VARS" "$ov"; then
+      echo "    OK   $ov"
+    else
+      echo "    INFO $ov (optional)"
+    fi
+  done
 done
 
 cat <<'EOF'
@@ -83,12 +110,19 @@ Recommended set commands:
 
   gh secret set MLFLOW_TRACKING_URI -R WeAreTheArtMakers/MLflow -e staging
   gh secret set MLFLOW_REGISTRY_URI -R WeAreTheArtMakers/MLflow -e staging
+  gh secret set KUBE_CONFIG -R WeAreTheArtMakers/MLflow -e staging
+  gh secret set API_GATE_KEY -R WeAreTheArtMakers/MLflow -e staging
+  gh variable set STAGING_API_URL -R WeAreTheArtMakers/MLflow -e staging -b "https://api.staging.wearetheartmakers.com"
+  gh variable set STAGING_PROMETHEUS_URL -R WeAreTheArtMakers/MLflow -e staging -b "https://prometheus.staging.wearetheartmakers.com"
   gh variable set AWS_ROLE_ARN -R WeAreTheArtMakers/MLflow -e staging -b "arn:aws:iam::<account-id>:role/<role-name>"
   gh variable set AWS_REGION -R WeAreTheArtMakers/MLflow -e staging -b "eu-central-1"
 
   gh secret set MLFLOW_TRACKING_URI -R WeAreTheArtMakers/MLflow -e production
   gh secret set MLFLOW_REGISTRY_URI -R WeAreTheArtMakers/MLflow -e production
   gh secret set KUBE_CONFIG -R WeAreTheArtMakers/MLflow -e production
+  gh secret set API_GATE_KEY -R WeAreTheArtMakers/MLflow -e production
+  gh variable set PROD_API_URL -R WeAreTheArtMakers/MLflow -e production -b "https://api.wearetheartmakers.com"
+  gh variable set PROD_PROMETHEUS_URL -R WeAreTheArtMakers/MLflow -e production -b "https://prometheus.wearetheartmakers.com"
   gh variable set AWS_ROLE_ARN -R WeAreTheArtMakers/MLflow -e production -b "arn:aws:iam::<account-id>:role/<role-name>"
   gh variable set AWS_REGION -R WeAreTheArtMakers/MLflow -e production -b "eu-central-1"
 EOF

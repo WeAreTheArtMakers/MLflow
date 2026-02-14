@@ -1,224 +1,235 @@
-# ArtPulse - Real Image MLOps Demo (MLflow + FastAPI + Docker + Kubernetes)
+# ArtPulse - Production MLOps Demo (MLflow + FastAPI + Docker + Kubernetes)
 
 ## About
 
-ArtPulse is an end-to-end MLOps reference project that takes an AI/ML model from idea to production.
+ArtPulse is an end-to-end MLOps portfolio project that demonstrates how to move AI/ML models from training to real operations.
 
-This repository demonstrates a full delivery story you can present to clients and hiring teams:
+Core capabilities:
 
-- Real image feature extraction and model training
-- MLflow experiment tracking, metrics logging, and artifact management
-- Model Registry alias flow (`challenger -> champion`) for controlled promotion
-- Production-ready FastAPI inference endpoints (`/predict`, `/predict-image`)
-- Docker and Kubernetes deployment
-- Drift monitoring and scheduled retraining automation
+- Real image feature extraction + model training
+- MLflow experiment tracking and Model Registry alias management
+- Secure FastAPI inference API (API key/JWT + rate-limit)
+- Controlled model rollout (`single`, `canary`, `blue_green`)
+- Prometheus-compatible metrics + Grafana dashboards
+- Drift monitoring + retraining automation
+- OIDC-protected admin surface (`/admin`) + audit logging hooks
+- Docker + Kubernetes deployment
+- Frontend operations panel (`/admin`) for live status
 
 ## Turkish Documentation
 
-If you prefer Turkish documentation, see:
-
 - `docs/README_TR.md`
 
-## Who This Is For
+## Business Impact
 
-- Companies that need production ML, not just notebook experiments
-- Teams building an MVP MLOps platform quickly
-- Individual engineers building a strong technical portfolio for client work
+Representative KPI targets for client-facing demos:
 
-## Value Proposition (Client-Facing)
+| KPI | Manual Baseline | ArtPulse Pipeline | Measurement Source |
+| --- | --- | --- | --- |
+| P95 inference latency | 180-250 ms | 45-90 ms | `/metrics` + Grafana latency panel |
+| Accuracy | 0.86-0.90 | 0.93-0.95 | MLflow `metrics.accuracy` |
+| Macro F1 | 0.83-0.88 | 0.91-0.93 | MLflow `metrics.f1_macro` |
+| Deploy lead time | 45-90 min | 8-15 min | CI/CD workflow duration |
+| Rollback time | 15-30 min | 1-3 min | Alias rollback + rollout restart |
 
-"With ArtPulse, I deliver not only model accuracy but also deployment, versioning, promotion/rollback, and operational monitoring in a working production pipeline."
-
-## What Problems This Solves
-
-This project directly answers:
-
-- Did you train models on real data?
-- Can you promote models with registry aliases in production?
-- Do you have CI/CD for build and deployment promotion?
-- Do you monitor drift and support periodic retraining?
-
-Yes - all are implemented here.
-
-## Model Summary
-
-The model predicts an art style label from 5 compact visual features:
-
-- `hue_mean`
-- `sat_mean`
-- `val_mean`
-- `contrast`
-- `edges`
-
-Labels:
-
-- `minimal`
-- `neo-pop`
-- `surreal`
-- `monochrome`
-- `vibrant`
+These are benchmark targets for this reference architecture. Final numbers depend on infra scale and workload profile.
 
 ## Quick Start
 
 ```bash
-cd /path/to/MLflow
 make install
-```
-
-### Synthetic quick demo
-
-```bash
-make demo
-```
-
-### Real image pipeline demo
-
-```bash
 make demo-image
+export ARTPULSE_API_KEY="replace-with-strong-key"
+make serve ARTPULSE_API_KEY="$ARTPULSE_API_KEY"
 ```
 
-These commands:
+## Real Image Training + Data Quality Gate
 
-- train multiple candidate models
-- log metrics/artifacts to MLflow
-- select and mark the best model
-- generate `artifacts/training_summary.json` and `artifacts/example_predictions.json`
-
-## Real Image Pipeline
-
-### Dataset layout
-
-Use `examples/image_dataset_layout.txt` as the expected folder structure.
-
-Required class folders:
-
-- `minimal`
-- `neo-pop`
-- `surreal`
-- `monochrome`
-- `vibrant`
-
-### Generate local sample dataset
+Train with image dataset and enforced pre-training checks:
 
 ```bash
-make generate-images
+make train-images DATASET_DIR=data/images
 ```
 
-Default output:
+Quality controls (Great Expectations-style gate):
 
-- `data/images/<label>/*.png`
+- feature schema validation
+- finite value check (`NaN/inf` rejection)
+- normalized feature range check (`0..1`)
+- minimum sample + minimum per-label checks
+- class imbalance warning
 
-### Train with real images
+Artifacts:
+
+- `artifacts/training_summary.json`
+- `artifacts/data_quality_report.json`
+- `artifacts/baseline_feature_stats.json`
+
+To bypass quality checks (not recommended in production):
 
 ```bash
-make train-images
+.venv/bin/python -m src.train --skip-quality-checks
 ```
 
-Manual command:
+## Controlled Rollout (Canary / Blue-Green)
+
+Runtime traffic routing is controlled by env vars.
+
+- `ROLLOUT_MODE=single|canary|blue_green`
+- `CANARY_TRAFFIC_PERCENT` (0-100)
+- `CANDIDATE_MODEL_ALIAS` (default `challenger`)
+- `ACTIVE_COLOR=blue|green`
+- `BLUE_GREEN_TRAFFIC_PERCENT` (0-100)
+
+Example canary run (10% traffic to challenger):
 
 ```bash
-.venv/bin/python -m src.train \
-  --dataset-type image \
-  --dataset-dir data/images \
-  --register-best \
-  --model-name artpulse-classifier \
-  --model-alias champion
+make serve \
+  ARTPULSE_API_KEY="$ARTPULSE_API_KEY" \
+  ROLLOUT_MODE=canary \
+  CANARY_TRAFFIC_PERCENT=10 \
+  CANDIDATE_MODEL_ALIAS=challenger
 ```
 
-## Remote MLflow + Model Registry Alias
-
-Example environment template:
-
-- `examples/remote_env.example`
-
-Example usage:
+Kubernetes rollout shift helper:
 
 ```bash
-export MLFLOW_TRACKING_URI="http://mlflow.example.com"
-export MLFLOW_REGISTRY_URI="http://mlflow.example.com"
-export MODEL_NAME="artpulse-classifier"
-export MODEL_ALIAS="champion"
+./scripts/rollout_shift.sh artpulse artpulse canary 25 blue
 ```
 
-### Load model by alias in API
+## API Security + Endpoints
+
+Start API:
 
 ```bash
-export USE_MODEL_REGISTRY_ALIAS=true
-make serve
-```
-
-Model URI in this mode:
-
-- `models:/artpulse-classifier@champion`
-
-### Promote alias
-
-```bash
-make promote-alias
-```
-
-Promotes `challenger -> champion`.
-
-## API Usage
-
-Start service:
-
-```bash
-make serve
+make serve ARTPULSE_API_KEY="$ARTPULSE_API_KEY"
 ```
 
 Endpoints:
 
 - `GET /health`
 - `GET /ready`
-- `POST /reload-model`
-- `GET /metadata`
-- `POST /predict` (tabular)
-- `POST /predict-image` (base64 image payload)
+- `GET /metrics`
+- `GET /admin` (frontend ops panel)
+- `POST /demo/token` (auth, mints short-lived demo token)
+- `GET /demo/status` (public demo, bearer token)
+- `POST /demo/predict` (public demo, bearer token)
+- `POST /reload-model` (auth)
+- `GET /metadata` (auth)
+- `GET /ops/summary` (auth)
+- `POST /predict` (auth)
+- `POST /predict-image` (auth)
 
-Requests:
+API key request example:
 
 ```bash
-make predict
-make predict-image
+curl -sS -X POST "http://localhost:8000/predict" \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: ${ARTPULSE_API_KEY}" \
+  -d '{"rows":[{"hue_mean":0.62,"sat_mean":0.55,"val_mean":0.70,"contrast":0.40,"edges":0.12}]}'
 ```
 
-Prediction event log:
+JWT mode is also supported (HS256) by setting `JWT_SECRET`.
 
-- `artifacts/prediction_events.jsonl`
+Public demo mode is controlled separately:
+
+- `DEMO_ENABLED=true|false`
+- `DEMO_JWK_CURRENT_KID=<active-key-id>`
+- `DEMO_JWK_KEYS_JSON=<json-map-of-kid-to-secret>`
+- `DEMO_TOKEN_ISSUER=<token-issuer>`
+- `DEMO_TOKEN_AUDIENCE=<token-audience>`
+- `DEMO_TOKEN_TTL_SECONDS=<seconds>`
+- `DEMO_RATE_LIMIT_REQUESTS`
+- `DEMO_RATE_LIMIT_WINDOW_SECONDS`
+
+## Frontend Operations Panel
+
+Ops dashboard URL:
+
+- `http://localhost:8000/admin`
+
+Panel shows:
+
+- primary/secondary model URIs
+- alias versions (champion/challenger + blue/green when enabled)
+- rollout mode and traffic percentage
+- drift score and event count
+- last retrain timestamp
+
+## Observability (Prometheus + Grafana)
+
+Start stack:
+
+```bash
+make monitoring-up
+```
+
+Services:
+
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3001` (`admin/admin`)
+- API metrics: `http://localhost:8000/metrics`
+
+Dashboard file:
+
+- `observability/grafana/dashboards/artpulse-api-dashboard.json`
+
+Stop stack:
+
+```bash
+make monitoring-down
+```
+
+## Load Testing (k6)
+
+Run throughput/latency benchmark:
+
+```bash
+make loadtest K6_API_URL="http://host.docker.internal:8000" ARTPULSE_API_KEY="$ARTPULSE_API_KEY"
+make loadtest-report
+```
+
+Outputs:
+
+- `loadtest/k6/k6-summary.json`
+- `artifacts/loadtest_report.md`
 
 ## Drift Monitoring + Retraining
 
-Generate drift report:
-
 ```bash
 make monitor-drift
-```
-
-Output:
-
-- `artifacts/drift_report.json`
-
-Run periodic retraining job:
-
-```bash
 make retrain
 ```
 
-## CI/CD Workflows
+Outputs:
 
-In `.github/workflows/`:
+- `artifacts/drift_report.json`
+- new MLflow runs + optional challenger registration
 
-- `ci.yml`: tests + synthetic/image training smoke checks
-- `build-image.yml`: GHCR image build/push
-- `deploy-promotion.yml`: model alias promotion + k8s rollout
-- `retrain.yml`: scheduled/manual drift + retrain pipeline
+## CI/CD and Promotion
 
-For secure GitHub secrets/variables setup:
+Workflows in `.github/workflows/`:
+
+- `ci.yml`
+- `build-image.yml`
+- `retrain.yml`
+- `deploy-promotion.yml`
+
+`deploy-promotion.yml` now supports rollout inputs:
+
+- `rollout_strategy` (`single`, `canary`, `blue_green`)
+- `rollout_secondary_percent`
+- `candidate_alias`
+- `active_color`
+- `run_quality_gate` + gate thresholds (`gate_p95_ms`, `gate_error_rate_max`, `gate_drift_score_max`)
+
+When the gate fails, workflow automatically executes `kubectl rollout undo` and marks deployment as failed.
+
+Security setup guide:
 
 - `docs/GITHUB_SECURE_SETUP.md`
 
-## Docker and Kubernetes
+## Docker + Kubernetes
 
 Docker:
 
@@ -230,64 +241,108 @@ make docker-run
 Kubernetes:
 
 ```bash
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/secret.example.yaml # edit values first
 make k8s-apply
-kubectl -n artpulse port-forward svc/artpulse 8000:80
-curl -sS http://localhost:8000/health
+make k8s-apply-public-staging
+make k8s-apply-public-production
 ```
 
-## Extended Project Scope (Added)
+Public URL + TLS blueprint:
 
-The following services are now part of the project offering roadmap:
+- `docs/PUBLIC_URL_TLS_BLUEPRINT.md`
+- `k8s/cert-manager-clusterissuer.yaml`
+- `k8s/ingress-staging.yaml`
+- `k8s/ingress-production.yaml`
+- `k8s/ingress-demo-staging.yaml`
+- `k8s/ingress-demo-production.yaml`
+- `k8s/ingress-oauth2-staging.yaml`
+- `k8s/ingress-oauth2-production.yaml`
+- `k8s/network-policy.yaml`
 
-- New data collection infrastructure setup
-- Frontend productization (dashboard/UI layer)
-- Long-term 24/7 operational NOC/SRE service model
+## Live Demo (Staging)
 
-## Portfolio Positioning
+Local staging baseline:
 
-Recommended positioning for CV/portfolio/GitHub profile:
+- API: `http://localhost:8000`
+- Ops panel: `http://localhost:8000/admin`
 
-- Role: `ML Engineer / MLOps Engineer`
-- Focus: `Model lifecycle ownership (train -> registry -> deploy -> monitor)`
-- Deliverables: `API, containerization, Kubernetes rollout, drift reporting, retraining automation`
+Demo assets:
 
-Suggested one-liners:
+- `docs/STAGING_DEMO.md`
+- `examples/staging_predict_request.json`
+- `examples/staging_predict_response.json`
+- `examples/public_demo_request.json`
+- `examples/public_demo_response.json`
 
-1. "Delivered a real-image classification pipeline with production-ready MLOps architecture."
-2. "Implemented controlled model promotion using MLflow Model Registry aliases."
-3. "Enabled operational continuity with drift monitoring and retraining automation."
+Run staging demo request:
 
-## Client-Facing Development Recommendations
+```bash
+make staging-demo API_URL="http://localhost:8000" ARTPULSE_API_KEY="$ARTPULSE_API_KEY"
+```
 
-### Phase 1 - Immediate business value (1-2 weeks)
+Run public demo endpoint locally:
 
-- Domain-specific data validation rules
-- API auth and rate limiting (JWT + gateway)
-- SLO/SLI dashboard (latency, error rate, model freshness)
+```bash
+make serve ARTPULSE_API_KEY="$ARTPULSE_API_KEY" DEMO_ENABLED=true ARTPULSE_DEMO_KEY="replace-signing-secret"
+make demo-token API_URL="http://localhost:8000" ARTPULSE_API_KEY="$ARTPULSE_API_KEY" ARTPULSE_DEMO_SUBJECT="portfolio-client"
+make demo-status API_URL="http://localhost:8000" ARTPULSE_API_KEY="$ARTPULSE_API_KEY" ARTPULSE_DEMO_SUBJECT="portfolio-client"
+make demo-predict API_URL="http://localhost:8000" ARTPULSE_API_KEY="$ARTPULSE_API_KEY" ARTPULSE_DEMO_SUBJECT="portfolio-client"
+```
 
-### Phase 2 - Enterprise scaling (2-4 weeks)
+TLS/public smoke check helper:
 
-- Canary/A-B model rollout
-- Feature store integration
-- Automated quality gates before promotion
+```bash
+make check-public-tls PUBLIC_API_URL="https://api.staging.<your-domain>" ARTPULSE_API_KEY="$ARTPULSE_API_KEY" ARTPULSE_DEMO_SUBJECT="portfolio-client"
+```
 
-### Phase 3 - Enterprise operations (4+ weeks)
+## 24/7 Operations Runbook Set
 
-- Audit trail and lineage reporting
-- PII governance and retention policies
-- On-prem / VPC deployment blueprint
-- 24/7 NOC/SRE runbook and on-call model
+- `docs/runbooks/INCIDENT_RUNBOOK.md`
+- `docs/runbooks/ROLLBACK_RUNBOOK.md`
+- `docs/runbooks/ONCALL_RUNBOOK.md`
+- `docs/runbooks/ESCALATION_MATRIX.md`
+
+## Commercial Packaging (Starter / Growth / Enterprise)
+
+| Package | Scope | SLA |
+| --- | --- | --- |
+| Starter | Single model pipeline, secure API, baseline monitoring, monthly support | 99.0% uptime, business-hours support |
+| Growth | Staging+prod, canary/blue-green, drift automation, governance | 99.5% uptime, 8x5 support, P1 <= 1h |
+| Enterprise | 24/7 NOC/SRE, compliance controls, incident drills, custom ops | 99.9% uptime, 24/7 support, P1 <= 15m |
+
+Detailed package document:
+
+- `docs/COMMERCIAL_PACKAGES.md`
+
+## Development Recommendations
+
+1. Replace handcrafted image features with embedding-based features (e.g. CLIP/ViT) and compare ROI.
+2. Add online feature store integration to keep train/serve feature parity auditable.
+3. Add shadow deployment mode for zero-risk candidate evaluation before canary traffic.
+4. Add policy-based promotion gates (quality + latency + drift) before alias updates.
+5. Add customer-level usage analytics in the ops panel for business reporting.
 
 ## Important Files
 
 ```text
-src/features.py               # synthetic + real image feature extraction
-src/generate_image_dataset.py # sample real-image style dataset generator
-src/train.py                  # train, compare, registry registration
-src/serve.py                  # API, image prediction, event logging
-src/monitor_drift.py          # drift report generation
-src/retrain_job.py            # periodic retraining job
-src/model_registry.py         # alias promotion utilities
+src/train.py                   # training + MLflow tracking + quality gate
+src/data_quality.py            # schema/range/distribution quality checks
+src/serve.py                   # API auth, rollout routing, metrics, admin panel
+src/monitor_drift.py           # drift score computation
+src/retrain_job.py             # retraining automation
+src/loadtest_report.py         # k6 summary -> markdown report
+loadtest/k6/predict.js         # API performance test scenario
+observability/docker-compose.yml
+k8s/deployment.yaml
+k8s/ingress-staging.yaml
+k8s/ingress-production.yaml
+k8s/ingress-demo-staging.yaml
+k8s/ingress-demo-production.yaml
+k8s/ingress-oauth2-staging.yaml
+k8s/ingress-oauth2-production.yaml
+k8s/cert-manager-clusterissuer.yaml
+scripts/rollout_shift.sh
 ```
 
 ## Validation
@@ -295,12 +350,6 @@ src/model_registry.py         # alias promotion utilities
 ```bash
 make test
 ```
-
-Coverage includes:
-
-- API health/readiness/predict/predict-image
-- real image dataset extraction
-- image-based training flow
 
 ---
 

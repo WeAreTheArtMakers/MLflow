@@ -1,0 +1,11 @@
+{
+  "labels": [
+    "vibrant"
+  ],
+  "predictions": [
+    4
+  ],
+  "mlflow_model_uri": "models:/artpulse-classifier@champion",
+  "rollout_route": "primary",
+  "rollout_mode": "single"
+}

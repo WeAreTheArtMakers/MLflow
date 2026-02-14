@@ -11,3 +11,36 @@ MODEL_ALIAS=champion
 # Optional runtime settings
 PREDICTION_LOG_PATH=./artifacts/prediction_events.jsonl
 IMAGE_FEATURE_SIZE=128
+TRAINING_SUMMARY_PATH=./artifacts/training_summary.json
+DRIFT_REPORT_PATH=./artifacts/drift_report.json
+
+# Auth
+AUTH_REQUIRED=true
+API_KEYS=replace-with-strong-key
+DEMO_ENABLED=true
+DEMO_JWK_CURRENT_KID=demo-v1
+DEMO_JWK_KEYS_JSON={"demo-v1":"replace-with-strong-demo-secret","demo-v2":"next-rotation-secret"}
+DEMO_TOKEN_ISSUER=https://api.staging.wearetheartmakers.com
+DEMO_TOKEN_AUDIENCE=artpulse-public-demo
+DEMO_TOKEN_TTL_SECONDS=600
+DEMO_RATE_LIMIT_REQUESTS=30
+DEMO_RATE_LIMIT_WINDOW_SECONDS=60
+SIEM_AUDIT_ENABLED=true
+SIEM_AUDIT_LOG_PATH=./artifacts/siem_audit_events.jsonl
+JWT_SECRET=
+JWT_ALGORITHM=HS256
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_REQUESTS=120
+RATE_LIMIT_WINDOW_SECONDS=60
+
+# Rollout
+ROLLOUT_MODE=single
+CANARY_TRAFFIC_PERCENT=0
+CANDIDATE_MODEL_ALIAS=challenger
+ACTIVE_COLOR=blue
+BLUE_MODEL_ALIAS=blue
+GREEN_MODEL_ALIAS=green
+BLUE_GREEN_TRAFFIC_PERCENT=0
+
+# Public URL/TLS (for docs & smoke checks)
+PUBLIC_API_URL=https://api.staging.artpulse.example.com
