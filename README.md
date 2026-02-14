@@ -20,6 +20,12 @@ Core capabilities:
 
 - `docs/README_TR.md`
 
+## Live Endpoints (Production)
+
+- Production API: `https://api.wearetheartmakers.com`
+- Swagger: `https://api.wearetheartmakers.com/docs`
+- Ops Panel: `https://api.wearetheartmakers.com/admin`
+
 ## Business Impact
 
 Representative KPI targets for client-facing demos:
@@ -270,6 +276,7 @@ Local staging baseline:
 Demo assets:
 
 - `docs/STAGING_DEMO.md`
+- `docs/LIVE_DEMO_SCRIPT.md`
 - `examples/staging_predict_request.json`
 - `examples/staging_predict_response.json`
 - `examples/public_demo_request.json`
@@ -295,6 +302,35 @@ TLS/public smoke check helper:
 ```bash
 make check-public-tls PUBLIC_API_URL="https://api.staging.<your-domain>" ARTPULSE_API_KEY="$ARTPULSE_API_KEY" ARTPULSE_DEMO_SUBJECT="portfolio-client"
 ```
+
+## Staging -> Production Promotion Policy
+
+Use separate hostnames and a manual promotion gate:
+
+- Staging API: `https://api.staging.wearetheartmakers.com`
+- Production API: `https://api.wearetheartmakers.com`
+
+Recommended rollout flow:
+
+1. Deploy latest build to staging.
+2. Run smoke tests on staging (`/health`, `/ready`, `/demo/token`, `/demo/predict`).
+3. Trigger `.github/workflows/deploy-promotion.yml` with `environment=production` and `run_quality_gate=true`.
+4. Promote only when quality gate passes.
+5. Keep rollback path ready (`kubectl rollout undo` is automated in workflow on gate failure).
+
+## Uptime Monitoring (1-Minute Ping + Email/Slack)
+
+Set an external uptime monitor for production:
+
+1. Create a monitor with URL `https://api.wearetheartmakers.com/health`.
+2. Set check interval to `1 minute`.
+3. Mark incident threshold as at least `2 consecutive failures`.
+4. Enable alert channels:
+   - Email (ops inbox)
+   - Slack webhook/channel
+5. Add a second monitor for `https://api.wearetheartmakers.com/ready` (optional but recommended).
+
+Any provider works (Better Stack, UptimeRobot, Freshping, Pingdom). Keep checks HTTPS-only.
 
 ## 24/7 Operations Runbook Set
 
