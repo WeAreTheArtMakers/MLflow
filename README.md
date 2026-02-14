@@ -16,6 +16,11 @@ Core capabilities:
 - Docker + Kubernetes deployment
 - Frontend operations panel (`/admin`) for live status
 
+## 🎧 Podcast (SoundCloud)
+
+[![Listen on SoundCloud](https://img.shields.io/badge/Listen%20on-SoundCloud-ff5500?logo=soundcloud&logoColor=white)](https://soundcloud.com/watam-pods-v2/artpulse-podcast-eng)
+
+
 ## Turkish Documentation
 
 - `docs/README_TR.md`
