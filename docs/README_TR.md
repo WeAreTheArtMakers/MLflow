@@ -161,14 +161,10 @@ Detayli ticari kapsam:
 
 - `docs/COMMERCIAL_PACKAGES.md`
 
-## Kisisel Marketing Icın Konumlandirma
-
-Musteri sunumunda su cizgiyi kullan:
-
-- "Sadece model dogrulugu degil, production operasyon sorumlulugu da aliyorum."
-- "Rollout, rollback, drift ve runbook sureclerini canli gosterebiliyorum."
-- "Staging demo + KPI + SLA tablosu ile teknik teslimi ticari dilde aktarabiliyorum."
+- "Sadece model dogrulugu degil, production operasyon sorumlulugu"
+- "Rollout, rollback, drift ve runbook sureclerini canli"
+- "Staging demo + KPI + SLA tablosu ile teknik teslim veticari dil."
 
 ## Not
 
-Komutlarin en guncel ve detayli aciklamasi icin her zaman `README.md` dosyasini referans al.
+Komutlarin en guncel ve detayli aciklamasi icin her zaman `README.md` dosyasindan referans alabilirsiniz.
