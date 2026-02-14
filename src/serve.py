@@ -13,7 +13,7 @@ from typing import Deque, Dict, List, Optional, Tuple
 import mlflow
 import mlflow.pyfunc
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from mlflow.tracking import MlflowClient
 from pydantic import BaseModel, Field
@@ -1090,6 +1090,133 @@ def health() -> dict:
     }
 
 
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request) -> HTMLResponse:
+    base_url = str(request.base_url).rstrip("/")
+    html = f"""
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ArtPulse Live Endpoints</title>
+    <style>
+      :root {{
+        --bg: #0b1320;
+        --card: #111d33;
+        --line: rgba(255, 255, 255, 0.14);
+        --text: #edf2f7;
+        --muted: #9fb3c8;
+        --accent: #45a29e;
+      }}
+      * {{ box-sizing: border-box; }}
+      body {{
+        margin: 0;
+        color: var(--text);
+        font-family: "Inter", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 12% 8%, rgba(69, 162, 158, 0.24), transparent 35%),
+          radial-gradient(circle at 90% 0%, rgba(255, 183, 3, 0.18), transparent 30%),
+          var(--bg);
+      }}
+      main {{
+        max-width: 940px;
+        margin: 0 auto;
+        padding: 28px 18px 40px;
+      }}
+      h1 {{
+        margin: 0;
+        font-size: 30px;
+      }}
+      .sub {{
+        margin-top: 8px;
+        color: var(--muted);
+      }}
+      .grid {{
+        margin-top: 18px;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }}
+      .card {{
+        background: linear-gradient(155deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px;
+      }}
+      .card h2 {{
+        margin: 0 0 10px;
+        font-size: 16px;
+      }}
+      ul {{
+        margin: 0;
+        padding-left: 18px;
+      }}
+      li {{
+        margin: 6px 0;
+      }}
+      a {{
+        color: #a8d8ff;
+        text-decoration: none;
+      }}
+      a:hover {{ text-decoration: underline; }}
+      pre {{
+        margin: 8px 0 0;
+        padding: 10px;
+        border-radius: 10px;
+        background: #0a111e;
+        border: 1px solid var(--line);
+        color: #d5e4f2;
+        overflow-x: auto;
+        font-size: 12px;
+      }}
+      @media (max-width: 820px) {{
+        .grid {{
+          grid-template-columns: 1fr;
+        }}
+      }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>ArtPulse Live Endpoints</h1>
+      <div class="sub">Production ML inference API, demo token flow, and operations console.</div>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Service Status</h2>
+          <ul>
+            <li><a href="/health">GET /health</a></li>
+            <li><a href="/ready">GET /ready</a></li>
+            <li><a href="/metrics">GET /metrics</a></li>
+          </ul>
+        </section>
+        <section class="card">
+          <h2>Developer Access</h2>
+          <ul>
+            <li><a href="/docs">Swagger /docs</a></li>
+            <li><a href="/openapi.json">OpenAPI /openapi.json</a></li>
+            <li><a href="/admin">Ops Panel /admin</a></li>
+          </ul>
+        </section>
+        <section class="card">
+          <h2>Demo Flow</h2>
+          <pre>1) POST /demo/token
+2) GET /demo/status (Bearer token)
+3) POST /demo/predict (Bearer token)</pre>
+        </section>
+        <section class="card">
+          <h2>Base URL</h2>
+          <pre>{base_url}</pre>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>
+    """
+    return HTMLResponse(content=html)
+
+
 @app.get("/ready")
 def ready() -> dict:
     if _model is None:
@@ -1240,8 +1367,40 @@ def admin_panel() -> HTMLResponse:
         color: var(--muted);
         font-size: 12px;
       }
+      .auth-row {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .auth-row input {
+        min-width: 320px;
+        flex: 1 1 420px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.22);
+        color: var(--text);
+        padding: 10px 12px;
+      }
+      .auth-row button {
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-weight: 600;
+        cursor: pointer;
+        background: var(--accent);
+        color: #1d1d1d;
+      }
+      .auth-row button.ghost {
+        border: 1px solid var(--line);
+        background: transparent;
+        color: var(--text);
+      }
       @media (max-width: 900px) {
         .card, .card.wide, .card.full { grid-column: span 12; }
+        .auth-row input {
+          min-width: 100%;
+        }
       }
     </style>
   </head>
@@ -1255,6 +1414,16 @@ def admin_panel() -> HTMLResponse:
         <div id="ts" class="sub">Loading...</div>
       </div>
       <div class="grid">
+        <section class="card full">
+          <div class="label">Ops API Key</div>
+          <div class="sub">Enter `x-api-key` to read `/ops/summary`.</div>
+          <div class="auth-row">
+            <input id="apiKeyInput" type="password" placeholder="Paste API key" autocomplete="off" />
+            <button id="saveKeyBtn" type="button">Save key</button>
+            <button id="clearKeyBtn" type="button" class="ghost">Clear</button>
+          </div>
+          <div id="authHint" class="meta">Key is stored only in this browser.</div>
+        </section>
         <section class="card">
           <div class="label">Primary Model</div>
           <div id="primaryModel" class="value mono">-</div>
@@ -1288,15 +1457,51 @@ def admin_panel() -> HTMLResponse:
       </div>
     </main>
     <script>
-      const apiKey = localStorage.getItem("artpulse_api_key") || prompt("Enter API key for /ops/summary");
+      let apiKey = localStorage.getItem("artpulse_api_key") || "";
+      let refreshTimer = null;
+      const apiKeyInput = document.getElementById("apiKeyInput");
+      const authHint = document.getElementById("authHint");
+      const saveKeyBtn = document.getElementById("saveKeyBtn");
+      const clearKeyBtn = document.getElementById("clearKeyBtn");
+
       if (apiKey) {
-        localStorage.setItem("artpulse_api_key", apiKey);
+        apiKeyInput.value = apiKey;
+        authHint.textContent = "API key loaded from browser storage.";
       }
 
       function setText(id, value) {
         const el = document.getElementById(id);
         if (!el) return;
         el.textContent = value ?? "-";
+      }
+
+      function setAuthHint(text, isError = false) {
+        authHint.textContent = text;
+        authHint.classList.remove("ok", "warn");
+        authHint.classList.add(isError ? "warn" : "ok");
+      }
+
+      function saveApiKey() {
+        const value = apiKeyInput.value.trim();
+        if (!value) {
+          setAuthHint("API key is required.", true);
+          return;
+        }
+        apiKey = value;
+        localStorage.setItem("artpulse_api_key", value);
+        setAuthHint("API key saved. Refreshing panel data...", false);
+        refresh().catch((err) => {
+          setText("ts", err.message);
+          setAuthHint(err.message, true);
+        });
+      }
+
+      function clearApiKey() {
+        apiKey = "";
+        localStorage.removeItem("artpulse_api_key");
+        apiKeyInput.value = "";
+        setAuthHint("API key cleared.", false);
+        setText("ts", "Waiting for API key...");
       }
 
       function fmtDate(value) {
@@ -1307,8 +1512,15 @@ def admin_panel() -> HTMLResponse:
       }
 
       async function refresh() {
-        if (!apiKey) return;
+        if (!apiKey) {
+          setText("ts", "Waiting for API key...");
+          return;
+        }
+
         const res = await fetch("/ops/summary", { headers: { "x-api-key": apiKey } });
+        if (res.status === 401) {
+          throw new Error("Invalid API key. Update key above.");
+        }
         if (!res.ok) throw new Error("Failed to load /ops/summary");
         const payload = await res.json();
 
@@ -1336,15 +1548,31 @@ def admin_panel() -> HTMLResponse:
           row.innerHTML = `<td>${alias}</td><td>${version}</td>`;
           aliasRows.appendChild(row);
         });
+
+        setAuthHint("Connected: /ops/summary loaded.", false);
       }
 
       async function boot() {
+        saveKeyBtn.addEventListener("click", saveApiKey);
+        clearKeyBtn.addEventListener("click", clearApiKey);
+        apiKeyInput.addEventListener("keydown", (evt) => {
+          if (evt.key === "Enter") {
+            saveApiKey();
+          }
+        });
+
         try {
           await refresh();
         } catch (err) {
           setText("ts", err.message);
+          setAuthHint(err.message, true);
         }
-        setInterval(refresh, 15000);
+        refreshTimer = setInterval(() => {
+          refresh().catch((err) => {
+            setText("ts", err.message);
+            setAuthHint(err.message, true);
+          });
+        }, 15000);
       }
 
       boot();
