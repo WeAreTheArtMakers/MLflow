@@ -12,6 +12,7 @@ Use this file for portfolio/client demo sessions.
 For internet-facing demos, replace with your public endpoint:
 
 - `https://api.staging.<your-domain>/`
+- Example: `https://api.staging.wearetheartmakers.com/`
 
 ## Demo Request/Response
 
@@ -49,3 +50,11 @@ make demo-predict API_URL="http://localhost:8000" ARTPULSE_API_KEY="replace-with
 3. Run `staging-demo` request and explain prediction + model URI served.
 4. Run `/demo/token` then `/demo/predict` to demonstrate short-lived signed demo tokens + throttling.
 5. Open Grafana dashboard and connect business KPIs to operational telemetry.
+
+## Promotion Gate Checklist (Before Production)
+
+1. Verify staging home page base URL shows HTTPS.
+2. Run full demo token flow from `/` (Try It card) or CLI script.
+3. Confirm `/admin` KPI cards are updating (requests, error rate, p95, drift trend).
+4. Confirm `/health` shows expected auth + rollout config.
+5. Promote to production only after manual review.

@@ -106,6 +106,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-size", type=int, default=300)
     parser.add_argument("--z-threshold", type=float, default=2.5)
     parser.add_argument("--output", default="artifacts/drift_report.json")
+    parser.add_argument("--history-output", default="artifacts/drift_history.jsonl")
     parser.add_argument("--fail-on-drift", action="store_true")
     return parser.parse_args()
 
@@ -115,6 +116,7 @@ def main() -> None:
     training_summary_path = Path(args.training_summary)
     prediction_log_path = Path(args.prediction_log)
     output_path = Path(args.output)
+    history_path = Path(args.history_output)
 
     baseline_stats = _load_baseline_stats(training_summary_path)
     events = _read_recent_events(prediction_log_path, window_size=args.window_size)
@@ -141,6 +143,9 @@ def main() -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    with history_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(report) + "\n")
     print(json.dumps(report, indent=2))
 
     if args.fail_on_drift and report["drift_detected"]:

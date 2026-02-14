@@ -113,6 +113,7 @@ make serve ARTPULSE_API_KEY="$ARTPULSE_API_KEY"
 
 Endpoints:
 
+- `GET /` (live welcome + browser-based "Try it" demo flow)
 - `GET /health`
 - `GET /ready`
 - `GET /metrics`
@@ -148,11 +149,19 @@ Public demo mode is controlled separately:
 - `DEMO_RATE_LIMIT_REQUESTS`
 - `DEMO_RATE_LIMIT_WINDOW_SECONDS`
 
+Corporate login mode for ops endpoints (`/ops/summary`) is available via trusted OIDC headers:
+
+- `OPS_OIDC_TRUST_HEADERS=true|false`
+- `OPS_OIDC_ALLOWED_EMAIL_DOMAINS=wearetheartmakers.com,partner.com` (optional allowlist)
+
+This mode is designed for ingress + oauth2-proxy (`x-auth-request-email` / `x-auth-request-user`).
+
 ## Frontend Operations Panel
 
 Ops dashboard URL:
 
 - `http://localhost:8000/admin`
+- `https://api.wearetheartmakers.com/admin`
 
 Panel shows:
 
@@ -160,7 +169,16 @@ Panel shows:
 - alias versions (champion/challenger + blue/green when enabled)
 - rollout mode and traffic percentage
 - drift score and event count
-- last retrain timestamp
+- request count, error rate, global p95 latency, inference p95 latency
+- drift trend direction and delta (from `artifacts/drift_history.jsonl`)
+- last retrain status + quality gate status
+
+Non-technical demo flow:
+
+- Open `https://api.wearetheartmakers.com/`
+- Use "Try it (No CLI)" card
+- mint token -> status -> predict directly in browser
+- Landing page base URL is proxy-aware (`x-forwarded-proto` / `x-forwarded-host`) to avoid `http` mismatches behind ingress.
 
 ## Observability (Prometheus + Grafana)
 
@@ -210,6 +228,7 @@ make retrain
 Outputs:
 
 - `artifacts/drift_report.json`
+- `artifacts/drift_history.jsonl`
 - new MLflow runs + optional challenger registration
 
 ## CI/CD and Promotion
@@ -312,11 +331,18 @@ Use separate hostnames and a manual promotion gate:
 
 Recommended rollout flow:
 
-1. Deploy latest build to staging.
-2. Run smoke tests on staging (`/health`, `/ready`, `/demo/token`, `/demo/predict`).
-3. Trigger `.github/workflows/deploy-promotion.yml` with `environment=production` and `run_quality_gate=true`.
-4. Promote only when quality gate passes.
-5. Keep rollback path ready (`kubectl rollout undo` is automated in workflow on gate failure).
+1. Deploy latest build to `staging` (`api.staging.wearetheartmakers.com`).
+2. Run staging smoke tests (`/health`, `/ready`, `/demo/token`, `/demo/predict`, `/admin`).
+3. Run load test + quality gate check in staging (latency/error/drift thresholds).
+4. Trigger `.github/workflows/deploy-promotion.yml` with `environment=production` and `run_quality_gate=true`.
+5. Promote only when gate passes; otherwise workflow auto-rolls back.
+
+Operator checklist (what you do manually):
+
+1. Ensure staging custom domain is mapped in Northflank Networking.
+2. Keep staging/prod API keys and demo JWK secrets different.
+3. Run one full demo flow in staging before production promotion.
+4. Approve production promotion manually from workflow dispatch.
 
 ## Uptime Monitoring (1-Minute Ping + Email/Slack)
 
@@ -331,6 +357,16 @@ Set an external uptime monitor for production:
 5. Add a second monitor for `https://api.wearetheartmakers.com/ready` (optional but recommended).
 
 Any provider works (Better Stack, UptimeRobot, Freshping, Pingdom). Keep checks HTTPS-only.
+
+Recommended alert policy:
+
+- Warning: 2 failed checks (about 2 min)
+- Critical: 5 failed checks (about 5 min)
+- Notification channels: Email + Slack webhook + on-call backup email
+
+Detailed setup runbook:
+
+- `docs/UPTIME_ALERTS_SETUP.md`
 
 ## 24/7 Operations Runbook Set
 

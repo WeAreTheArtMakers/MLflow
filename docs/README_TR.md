@@ -15,6 +15,7 @@ Yeni eklenen ana basliklar:
 - Frontend operasyon paneli (`/admin`)
 - Public URL + TLS mimarisi (`Ingress + cert-manager`)
 - Ayri demo endpoint (`/demo/status`, `/demo/predict`)
+- Ana sayfada terminalsiz "Try it" demo akisi (`/`)
 - 7/24 operasyon runbook seti (incident, rollback, on-call, escalation)
 - Ticari paketleme (Starter / Growth / Enterprise)
 
@@ -62,12 +63,19 @@ Rapor dosyasi:
 ## Frontend Operasyon Paneli
 
 - URL: `http://localhost:8000/admin`
+- Uretim URL: `https://api.wearetheartmakers.com/admin`
 - Gosterilenler:
   - aktif model URI'lari
   - alias versiyonlari
   - rollout modu + trafik yuzdesi
-  - drift skoru
-  - son retrain zamani
+  - request sayisi, hata orani, p95 latency
+  - drift skoru + drift trend yonu
+  - son retrain durumu + kalite gecis sonucu
+
+Kurumsal login (SSO) icin ops endpoint mode:
+
+- `OPS_OIDC_TRUST_HEADERS=true`
+- `OPS_OIDC_ALLOWED_EMAIL_DOMAINS=wearetheartmakers.com`
 
 ## Yuk Testi
 
@@ -110,6 +118,17 @@ Public TLS smoke test:
 ```bash
 make check-public-tls PUBLIC_API_URL="https://api.staging.<domain>" ARTPULSE_API_KEY="$ARTPULSE_API_KEY" ARTPULSE_DEMO_SUBJECT="portfolio-client"
 ```
+
+Staging -> Production gecis ozet akisi:
+
+1. Once staging (`api.staging.wearetheartmakers.com`) deploy + test
+2. Staging'de smoke + kalite gate gecisi
+3. Production promotion'u manuel onayla
+4. Gate fail olursa rollback otomatik
+
+1 dakikalik uptime + alarm kurulum rehberi:
+
+- `docs/UPTIME_ALERTS_SETUP.md`
 
 ## Public URL + TLS Kurulum Referansi
 

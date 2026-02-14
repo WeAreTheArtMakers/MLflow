@@ -103,7 +103,7 @@ check-public-tls:
 	./scripts/check_public_tls.sh "$(PUBLIC_API_URL)" "$(ARTPULSE_API_KEY)" "$(ARTPULSE_DEMO_SUBJECT)"
 
 monitor-drift:
-	$(PY) -m src.monitor_drift --training-summary artifacts/training_summary.json --prediction-log artifacts/prediction_events.jsonl --output artifacts/drift_report.json
+	$(PY) -m src.monitor_drift --training-summary artifacts/training_summary.json --prediction-log artifacts/prediction_events.jsonl --output artifacts/drift_report.json --history-output artifacts/drift_history.jsonl
 
 retrain:
 	$(PY) -m src.retrain_job --register-best --model-name $(MODEL_NAME) --model-alias challenger

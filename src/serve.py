@@ -331,6 +331,24 @@ def _drift_report_path() -> Path:
     return Path(os.getenv("DRIFT_REPORT_PATH", "artifacts/drift_report.json"))
 
 
+def _drift_history_path() -> Path:
+    return Path(os.getenv("DRIFT_HISTORY_PATH", "artifacts/drift_history.jsonl"))
+
+
+def _ops_oidc_trust_headers() -> bool:
+    return os.getenv("OPS_OIDC_TRUST_HEADERS", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _ops_oidc_allowed_email_domains() -> set[str]:
+    raw = os.getenv("OPS_OIDC_ALLOWED_EMAIL_DOMAINS", "")
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
 def _secondary_traffic_percent() -> float:
     mode = _rollout_mode()
     if mode == "canary":
@@ -447,6 +465,68 @@ def _render_prometheus_metrics() -> str:
         lines.append(f"artpulse_model_loaded {_model_loaded}")
 
     return "\n".join(lines) + "\n"
+
+
+def _histogram_percentile_ms(bucket_counts: Dict[float, int], total_count: int, percentile: float) -> float:
+    if total_count <= 0:
+        return 0.0
+    target = total_count * percentile
+    for bucket in HTTP_LATENCY_BUCKETS:
+        if bucket_counts.get(bucket, 0) >= target:
+            return round(bucket * 1000.0, 2)
+    return round(HTTP_LATENCY_BUCKETS[-1] * 1000.0, 2)
+
+
+def _build_runtime_kpis() -> Dict[str, object]:
+    inference_paths = {"/predict", "/predict-image", "/demo/predict"}
+    all_buckets = {bucket: 0 for bucket in HTTP_LATENCY_BUCKETS}
+    inference_buckets = {bucket: 0 for bucket in HTTP_LATENCY_BUCKETS}
+
+    with _metrics_lock:
+        total_requests = sum(_http_requests_total.values())
+        error_requests = sum(
+            value for (_, _, status), value in _http_requests_total.items() if status.startswith("5")
+        )
+        prediction_count = sum(_predictions_total.values())
+        auth_failures = sum(_auth_failures_total.values())
+
+        latency_count = sum(_http_latency_count.values())
+        latency_sum = sum(_http_latency_sum.values())
+
+        inference_latency_count = 0
+        inference_latency_sum = 0.0
+        for (method, path), count in _http_latency_count.items():
+            if path in inference_paths:
+                inference_latency_count += count
+                inference_latency_sum += _http_latency_sum.get((method, path), 0.0)
+
+        for (_, path, bucket), count in _http_latency_bucket_counts.items():
+            all_buckets[bucket] += count
+            if path in inference_paths:
+                inference_buckets[bucket] += count
+
+    error_rate = (error_requests / total_requests) if total_requests else 0.0
+    avg_latency_ms = (latency_sum / latency_count * 1000.0) if latency_count else 0.0
+    inference_avg_latency_ms = (
+        inference_latency_sum / inference_latency_count * 1000.0 if inference_latency_count else 0.0
+    )
+
+    return {
+        "request_count": int(total_requests),
+        "prediction_count": int(prediction_count),
+        "error_count": int(error_requests),
+        "error_rate": round(error_rate, 6),
+        "error_rate_percent": round(error_rate * 100.0, 3),
+        "p95_latency_ms": _histogram_percentile_ms(all_buckets, latency_count, 0.95),
+        "avg_latency_ms": round(avg_latency_ms, 2),
+        "inference_request_count": int(inference_latency_count),
+        "inference_p95_latency_ms": _histogram_percentile_ms(
+            inference_buckets, inference_latency_count, 0.95
+        ),
+        "inference_avg_latency_ms": round(inference_avg_latency_ms, 2),
+        "auth_failures": int(auth_failures),
+        "rate_limit_exceeded_total": int(_rate_limit_exceeded_total),
+    }
 
 
 def _b64url_decode(encoded: str) -> bytes:
@@ -756,12 +836,7 @@ def _authenticate_identity(authorization: Optional[str], x_api_key: Optional[str
     raise HTTPException(status_code=401, detail="Missing credentials")
 
 
-def require_auth(
-    authorization: Optional[str] = Header(default=None),
-    x_api_key: Optional[str] = Header(default=None),
-) -> str:
-    identity = _authenticate_identity(authorization=authorization, x_api_key=x_api_key)
-
+def _apply_rate_limit(identity: str) -> str:
     allowed, retry_after = _consume_rate_limit(identity=identity)
     if not allowed:
         _inc_rate_limit_exceeded()
@@ -770,8 +845,68 @@ def require_auth(
             detail="Rate limit exceeded",
             headers={"Retry-After": str(max(1, int(round(retry_after))))},
         )
-
     return identity
+
+
+def _proxy_oidc_identity(
+    x_auth_request_email: Optional[str],
+    x_auth_request_user: Optional[str],
+    x_forwarded_user: Optional[str],
+    x_user: Optional[str],
+) -> str:
+    candidates = [
+        (x_auth_request_email or "").strip(),
+        (x_auth_request_user or "").strip(),
+        (x_forwarded_user or "").strip(),
+        (x_user or "").strip(),
+    ]
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return ""
+
+
+def _is_allowed_oidc_email(identity: str) -> bool:
+    allowed_domains = _ops_oidc_allowed_email_domains()
+    if not allowed_domains:
+        return True
+    if "@" not in identity:
+        return False
+    domain = identity.split("@", 1)[1].lower()
+    return domain in allowed_domains
+
+
+def require_auth(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+) -> str:
+    identity = _authenticate_identity(authorization=authorization, x_api_key=x_api_key)
+    return _apply_rate_limit(identity=identity)
+
+
+def require_ops_access(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_auth_request_email: Optional[str] = Header(default=None),
+    x_auth_request_user: Optional[str] = Header(default=None),
+    x_forwarded_user: Optional[str] = Header(default=None),
+    x_user: Optional[str] = Header(default=None),
+) -> str:
+    if _ops_oidc_trust_headers():
+        proxy_identity = _proxy_oidc_identity(
+            x_auth_request_email=x_auth_request_email,
+            x_auth_request_user=x_auth_request_user,
+            x_forwarded_user=x_forwarded_user,
+            x_user=x_user,
+        )
+        if proxy_identity:
+            if not _is_allowed_oidc_email(proxy_identity):
+                _inc_auth_failure("ops_oidc_forbidden_domain")
+                raise HTTPException(status_code=403, detail="SSO account is not in allowed domains")
+            return _apply_rate_limit(identity=f"oidc:{proxy_identity}")
+
+    identity = _authenticate_identity(authorization=authorization, x_api_key=x_api_key)
+    return _apply_rate_limit(identity=identity)
 
 
 def _consume_demo_rate_limit(identity: str) -> Tuple[bool, float]:
@@ -915,19 +1050,110 @@ def _read_json_file(path: Path) -> Dict[str, object]:
     return payload if isinstance(payload, dict) else {}
 
 
+def _read_jsonl(path: Path, max_items: int = 60) -> List[Dict[str, object]]:
+    if not path.exists():
+        return []
+    items: List[Dict[str, object]] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                items.append(payload)
+    if max_items > 0 and len(items) > max_items:
+        return items[-max_items:]
+    return items
+
+
+def _build_drift_trend(history_items: List[Dict[str, object]]) -> Dict[str, object]:
+    points: List[Dict[str, object]] = []
+    for item in history_items:
+        try:
+            score = float(item.get("drift_score", 0.0))
+        except Exception:
+            score = 0.0
+        points.append(
+            {
+                "generated_at": str(item.get("generated_at", "unknown")),
+                "drift_score": round(score, 6),
+                "drift_detected": bool(item.get("drift_detected", False)),
+            }
+        )
+
+    points = points[-12:]
+    direction = "flat"
+    delta = 0.0
+    if len(points) >= 2:
+        recent = points[-3:]
+        previous = points[-6:-3] if len(points) >= 6 else points[:-1]
+        if previous:
+            recent_avg = sum(float(p["drift_score"]) for p in recent) / len(recent)
+            prev_avg = sum(float(p["drift_score"]) for p in previous) / len(previous)
+            delta = recent_avg - prev_avg
+            if delta > 0.05:
+                direction = "up"
+            elif delta < -0.05:
+                direction = "down"
+
+    return {
+        "direction": direction,
+        "delta": round(delta, 6),
+        "points": points,
+    }
+
+
+def _header_first(request: Request, header_name: str) -> str:
+    raw = request.headers.get(header_name, "")
+    if not raw:
+        return ""
+    return raw.split(",")[0].strip()
+
+
+def _external_base_url(request: Request) -> str:
+    scheme = _header_first(request, "x-forwarded-proto") or request.url.scheme
+    host = _header_first(request, "x-forwarded-host") or request.headers.get("host", "")
+    if not host:
+        host = request.url.netloc
+
+    forwarded_port = _header_first(request, "x-forwarded-port")
+    if forwarded_port and host and ":" not in host:
+        if (scheme == "https" and forwarded_port != "443") or (scheme == "http" and forwarded_port != "80"):
+            host = f"{host}:{forwarded_port}"
+
+    prefix = _header_first(request, "x-forwarded-prefix")
+    prefix_part = f"/{prefix.strip('/')}" if prefix else ""
+    return f"{scheme}://{host}{prefix_part}".rstrip("/")
+
+
 def _get_alias_version(alias: str) -> str:
+    if not _registry_uri():
+        return "registry-disabled"
     try:
         client = MlflowClient(tracking_uri=_tracking_uri(), registry_uri=_registry_uri() or None)
         mv = client.get_model_version_by_alias(name=_model_name(), alias=alias)
     except Exception:
-        return "unknown"
+        return "not-set"
     return str(mv.version)
 
 
 def _build_ops_summary() -> Dict[str, object]:
     training_summary = _read_json_file(_training_summary_path())
     drift_report = _read_json_file(_drift_report_path())
+    drift_history = _read_jsonl(_drift_history_path(), max_items=60)
     rollout_mode = _rollout_mode()
+    runtime_kpis = _build_runtime_kpis()
+
+    last_retrain_at = training_summary.get("generated_at", "unknown")
+    best_model_uri = str(training_summary.get("best_model_uri", "") or "")
+    retrain_success = bool(best_model_uri)
+    data_quality_payload = training_summary.get("data_quality", {})
+    data_quality_passed = None
+    if isinstance(data_quality_payload, dict) and "passed" in data_quality_payload:
+        data_quality_passed = bool(data_quality_payload.get("passed"))
 
     alias_versions: Dict[str, str] = {
         "champion": _get_alias_version("champion"),
@@ -944,8 +1170,14 @@ def _build_ops_summary() -> Dict[str, object]:
             "primary_uri": _model_uri,
             "secondary_uri": _secondary_model_uri,
             "model_name": _model_name(),
+            "registry_enabled": bool(_registry_uri()),
+            "registry_uri": _registry_uri() or "not-configured",
+            "registry_alias_mode_enabled": _use_registry_alias(),
             "alias_versions": alias_versions,
-            "last_retrain_at": training_summary.get("generated_at", "unknown"),
+            "last_retrain_at": last_retrain_at,
+            "last_retrain_success": retrain_success,
+            "last_retrain_model_uri": best_model_uri or "unknown",
+            "data_quality_passed": data_quality_passed,
         },
         "drift": {
             "drift_detected": bool(drift_report.get("drift_detected", False)),
@@ -954,6 +1186,7 @@ def _build_ops_summary() -> Dict[str, object]:
             if drift_report.get("event_count") is not None
             else 0,
             "generated_at": drift_report.get("generated_at", "unknown"),
+            "trend": _build_drift_trend(drift_history),
         },
         "rollout": {
             "mode": rollout_mode,
@@ -965,9 +1198,20 @@ def _build_ops_summary() -> Dict[str, object]:
             if rollout_mode == "blue_green" and _active_color() == "blue"
             else ("blue" if rollout_mode == "blue_green" else "secondary"),
         },
+        "kpis": runtime_kpis,
+        "retrain": {
+            "status": "success" if retrain_success else ("unknown" if not training_summary else "failed"),
+            "last_retrain_at": last_retrain_at,
+            "last_model_uri": best_model_uri or "unknown",
+            "data_quality_passed": data_quality_passed,
+            "candidate_count": len(training_summary.get("candidates", []))
+            if isinstance(training_summary.get("candidates"), list)
+            else 0,
+        },
         "paths": {
             "training_summary": str(_training_summary_path()),
             "drift_report": str(_drift_report_path()),
+            "drift_history": str(_drift_history_path()),
             "prediction_log": str(_prediction_log_path()),
         },
     }
@@ -1067,6 +1311,8 @@ def health() -> dict:
             "rate_limit_enabled": _rate_limit_enabled(),
             "rate_limit_requests": _rate_limit_requests(),
             "rate_limit_window_seconds": _rate_limit_window_seconds(),
+            "ops_oidc_enabled": _ops_oidc_trust_headers(),
+            "ops_oidc_allowed_email_domains": sorted(_ops_oidc_allowed_email_domains()),
         },
         "demo": {
             "enabled": _demo_enabled(),
@@ -1092,7 +1338,7 @@ def health() -> dict:
 
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request) -> HTMLResponse:
-    base_url = str(request.base_url).rstrip("/")
+    base_url = _external_base_url(request)
     html = f"""
 <!doctype html>
 <html lang="en">
@@ -1170,8 +1416,47 @@ def home(request: Request) -> HTMLResponse:
         overflow-x: auto;
         font-size: 12px;
       }}
+      .field {{
+        margin-top: 8px;
+      }}
+      label {{
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }}
+      input, button {{
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.05);
+        color: var(--text);
+        padding: 10px 12px;
+        font-size: 13px;
+      }}
+      button {{
+        margin-top: 8px;
+        background: #45a29e;
+        color: #061118;
+        border: 0;
+        font-weight: 700;
+        cursor: pointer;
+      }}
+      .row {{
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }}
+      .hint {{
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }}
       @media (max-width: 820px) {{
         .grid {{
+          grid-template-columns: 1fr;
+        }}
+        .row {{
           grid-template-columns: 1fr;
         }}
       }}
@@ -1206,11 +1491,119 @@ def home(request: Request) -> HTMLResponse:
 3) POST /demo/predict (Bearer token)</pre>
         </section>
         <section class="card">
+          <h2>Try It (No CLI)</h2>
+          <div class="field">
+            <label>API Key (for /demo/token)</label>
+            <input id="tryApiKey" type="password" placeholder="x-api-key" autocomplete="off" />
+          </div>
+          <div class="field">
+            <label>Demo Subject</label>
+            <input id="trySubject" type="text" value="portfolio-demo" />
+          </div>
+          <div class="row">
+            <button id="btnToken" type="button">1) Mint Token</button>
+            <button id="btnStatus" type="button">2) Demo Status</button>
+          </div>
+          <button id="btnPredict" type="button">3) Demo Predict</button>
+          <div class="hint">This keeps token flow visible for client demos without terminal commands.</div>
+          <pre id="tryOutput">Click "Mint Token" to start.</pre>
+        </section>
+        <section class="card">
           <h2>Base URL</h2>
           <pre>{base_url}</pre>
         </section>
       </div>
     </main>
+    <script>
+      let demoToken = "";
+      const apiKeyEl = document.getElementById("tryApiKey");
+      const subjectEl = document.getElementById("trySubject");
+      const outEl = document.getElementById("tryOutput");
+
+      function setOutput(payload) {{
+        if (typeof payload === "string") {{
+          outEl.textContent = payload;
+          return;
+        }}
+        outEl.textContent = JSON.stringify(payload, null, 2);
+      }}
+
+      async function mintToken() {{
+        const apiKey = apiKeyEl.value.trim();
+        const subject = (subjectEl.value || "portfolio-demo").trim();
+        if (!apiKey) {{
+          setOutput("API key is required to mint token.");
+          return;
+        }}
+        const res = await fetch("/demo/token", {{
+          method: "POST",
+          headers: {{
+            "content-type": "application/json",
+            "x-api-key": apiKey
+          }},
+          body: JSON.stringify({{ subject, ttl_seconds: 600 }})
+        }});
+        const payload = await res.json();
+        if (!res.ok) {{
+          setOutput(payload);
+          return;
+        }}
+        demoToken = payload.access_token || "";
+        setOutput({{
+          step: "token_minted",
+          expires_at: payload.expires_at,
+          token_preview: demoToken ? `${{demoToken.slice(0, 16)}}...` : ""
+        }});
+      }}
+
+      async function demoStatus() {{
+        if (!demoToken) {{
+          setOutput("Mint token first.");
+          return;
+        }}
+        const res = await fetch("/demo/status", {{
+          headers: {{ Authorization: `Bearer ${{demoToken}}` }}
+        }});
+        const payload = await res.json();
+        setOutput(payload);
+      }}
+
+      async function demoPredict() {{
+        if (!demoToken) {{
+          setOutput("Mint token first.");
+          return;
+        }}
+        const body = {{
+          row: {{
+            hue_mean: 0.62,
+            sat_mean: 0.55,
+            val_mean: 0.7,
+            contrast: 0.4,
+            edges: 0.12
+          }}
+        }};
+        const res = await fetch("/demo/predict", {{
+          method: "POST",
+          headers: {{
+            "content-type": "application/json",
+            Authorization: `Bearer ${{demoToken}}`
+          }},
+          body: JSON.stringify(body)
+        }});
+        const payload = await res.json();
+        setOutput(payload);
+      }}
+
+      document.getElementById("btnToken").addEventListener("click", () => {{
+        mintToken().catch((err) => setOutput(`Token error: ${{err.message}}`));
+      }});
+      document.getElementById("btnStatus").addEventListener("click", () => {{
+        demoStatus().catch((err) => setOutput(`Status error: ${{err.message}}`));
+      }});
+      document.getElementById("btnPredict").addEventListener("click", () => {{
+        demoPredict().catch((err) => setOutput(`Predict error: ${{err.message}}`));
+      }});
+    </script>
   </body>
 </html>
     """
@@ -1259,7 +1652,7 @@ def metadata(_: str = Depends(require_auth)) -> dict:
 
 
 @app.get("/ops/summary")
-def ops_summary(_: str = Depends(require_auth)) -> dict:
+def ops_summary(_: str = Depends(require_ops_access)) -> dict:
     return _build_ops_summary()
 
 
@@ -1409,14 +1802,14 @@ def admin_panel() -> HTMLResponse:
       <div class="head">
         <div>
           <h1>ArtPulse Ops Console</h1>
-          <div class="sub">Model version, rollout, drift, and retrain status</div>
+          <div class="sub">Model/version control, runtime KPI panel, drift trend, and retrain status</div>
         </div>
         <div id="ts" class="sub">Loading...</div>
       </div>
       <div class="grid">
         <section class="card full">
           <div class="label">Ops API Key</div>
-          <div class="sub">Enter `x-api-key` to read `/ops/summary`.</div>
+          <div class="sub">Use `x-api-key` or corporate SSO (if OIDC header mode is enabled).</div>
           <div class="auth-row">
             <input id="apiKeyInput" type="password" placeholder="Paste API key" autocomplete="off" />
             <button id="saveKeyBtn" type="button">Save key</button>
@@ -1436,6 +1829,21 @@ def admin_panel() -> HTMLResponse:
           <div class="label">Rollout</div>
           <div id="rolloutMode" class="value">-</div>
         </section>
+        <section class="card">
+          <div class="label">Request Count</div>
+          <div id="kpiRequests" class="value">0</div>
+          <div id="kpiPredictions" class="meta">predictions: 0</div>
+        </section>
+        <section class="card">
+          <div class="label">Error Rate</div>
+          <div id="kpiErrorRate" class="value">0.00%</div>
+          <div id="kpiErrors" class="meta">errors: 0</div>
+        </section>
+        <section class="card">
+          <div class="label">P95 Latency</div>
+          <div id="kpiP95" class="value">0 ms</div>
+          <div id="kpiP95Inference" class="meta">inference p95: 0 ms</div>
+        </section>
         <section class="card wide">
           <div class="label">Drift Score</div>
           <div id="driftScore" class="value">0.00</div>
@@ -1444,7 +1852,13 @@ def admin_panel() -> HTMLResponse:
         <section class="card wide">
           <div class="label">Last Retrain</div>
           <div id="lastRetrain" class="value">-</div>
+          <div id="retrainStatus" class="meta">status: unknown</div>
           <div id="rolloutPercent" class="meta">Secondary traffic: 0%</div>
+        </section>
+        <section class="card wide">
+          <div class="label">Drift Trend</div>
+          <div id="driftTrend" class="value">flat</div>
+          <div id="driftTrendMeta" class="meta">delta: 0.000000</div>
         </section>
         <section class="card full">
           <div class="label">Registry Alias Versions</div>
@@ -1459,6 +1873,7 @@ def admin_panel() -> HTMLResponse:
     <script>
       let apiKey = localStorage.getItem("artpulse_api_key") || "";
       let refreshTimer = null;
+      let oidcMode = false;
       const apiKeyInput = document.getElementById("apiKeyInput");
       const authHint = document.getElementById("authHint");
       const saveKeyBtn = document.getElementById("saveKeyBtn");
@@ -1481,6 +1896,24 @@ def admin_panel() -> HTMLResponse:
         authHint.classList.add(isError ? "warn" : "ok");
       }
 
+      async function detectAuthMode() {
+        try {
+          const res = await fetch("/health");
+          if (!res.ok) return;
+          const payload = await res.json();
+          oidcMode = Boolean(payload.auth?.ops_oidc_enabled);
+          const allowedDomains = payload.auth?.ops_oidc_allowed_email_domains || [];
+          if (oidcMode) {
+            const domainHint = allowedDomains.length
+              ? ` (allowed domains: ${allowedDomains.join(", ")})`
+              : "";
+            setAuthHint(`Corporate SSO mode is active${domainHint}. API key is optional fallback.`, false);
+          }
+        } catch (_) {
+          // Ignore and keep API key mode fallback.
+        }
+      }
+
       function saveApiKey() {
         const value = apiKeyInput.value.trim();
         if (!value) {
@@ -1501,7 +1934,7 @@ def admin_panel() -> HTMLResponse:
         localStorage.removeItem("artpulse_api_key");
         apiKeyInput.value = "";
         setAuthHint("API key cleared.", false);
-        setText("ts", "Waiting for API key...");
+        setText("ts", oidcMode ? "Using SSO mode..." : "Waiting for API key...");
       }
 
       function fmtDate(value) {
@@ -1512,15 +1945,21 @@ def admin_panel() -> HTMLResponse:
       }
 
       async function refresh() {
-        if (!apiKey) {
+        if (!apiKey && !oidcMode) {
           setText("ts", "Waiting for API key...");
           return;
         }
 
-        const res = await fetch("/ops/summary", { headers: { "x-api-key": apiKey } });
+        const headers = {};
+        if (apiKey) headers["x-api-key"] = apiKey;
+        const res = await fetch("/ops/summary", { headers });
         if (res.status === 401) {
+          if (oidcMode) {
+            throw new Error("SSO session missing or expired. Re-login via corporate SSO.");
+          }
           throw new Error("Invalid API key. Update key above.");
         }
+        if (res.status === 403) throw new Error("SSO user not allowed by domain policy.");
         if (!res.ok) throw new Error("Failed to load /ops/summary");
         const payload = await res.json();
 
@@ -1528,6 +1967,20 @@ def admin_panel() -> HTMLResponse:
         setText("secondaryModel", payload.model?.secondary_uri || "none");
         setText("rolloutMode", payload.rollout?.mode || "single");
         setText("lastRetrain", fmtDate(payload.model?.last_retrain_at));
+
+        const kpi = payload.kpis || {};
+        const reqCount = Number(kpi.request_count || 0);
+        const predCount = Number(kpi.prediction_count || 0);
+        const errRatePct = Number(kpi.error_rate_percent || 0);
+        const errCount = Number(kpi.error_count || 0);
+        const p95 = Number(kpi.p95_latency_ms || 0);
+        const infP95 = Number(kpi.inference_p95_latency_ms || 0);
+        setText("kpiRequests", reqCount.toLocaleString());
+        setText("kpiPredictions", `predictions: ${predCount.toLocaleString()}`);
+        setText("kpiErrorRate", `${errRatePct.toFixed(2)}%`);
+        setText("kpiErrors", `errors: ${errCount.toLocaleString()} | auth_failures: ${Number(kpi.auth_failures || 0).toLocaleString()}`);
+        setText("kpiP95", `${p95.toFixed(2)} ms`);
+        setText("kpiP95Inference", `inference p95: ${infP95.toFixed(2)} ms`);
 
         const drift = payload.drift || {};
         const driftScore = Number(drift.drift_score || 0).toFixed(3);
@@ -1537,6 +1990,23 @@ def admin_panel() -> HTMLResponse:
         driftEl.classList.add(drift.drift_detected ? "warn" : "ok");
         setText("driftMeta", `detected=${Boolean(drift.drift_detected)} | events=${drift.event_count || 0} | updated=${fmtDate(drift.generated_at)}`);
 
+        const trend = drift.trend || {};
+        const trendDirection = trend.direction || "flat";
+        const trendDelta = Number(trend.delta || 0);
+        const trendPoints = Array.isArray(trend.points) ? trend.points.length : 0;
+        const driftTrendEl = document.getElementById("driftTrend");
+        setText("driftTrend", trendDirection);
+        setText("driftTrendMeta", `delta: ${trendDelta.toFixed(6)} | points: ${trendPoints}`);
+        driftTrendEl.classList.remove("ok", "warn");
+        driftTrendEl.classList.add(trendDirection === "up" ? "warn" : "ok");
+
+        const retrain = payload.retrain || {};
+        const dq = retrain.data_quality_passed;
+        const dqText = dq === true ? "passed" : (dq === false ? "failed" : "n/a");
+        setText(
+          "retrainStatus",
+          `status: ${retrain.status || "unknown"} | quality: ${dqText} | candidates: ${retrain.candidate_count ?? 0}`
+        );
         setText("rolloutPercent", `Secondary traffic: ${payload.rollout?.secondary_percent ?? 0}%`);
         setText("ts", `Last refresh: ${new Date().toLocaleTimeString()}`);
 
@@ -1549,7 +2019,10 @@ def admin_panel() -> HTMLResponse:
           aliasRows.appendChild(row);
         });
 
-        setAuthHint("Connected: /ops/summary loaded.", false);
+        setAuthHint(
+          oidcMode ? "Connected: /ops/summary loaded via SSO/API key." : "Connected: /ops/summary loaded.",
+          false
+        );
       }
 
       async function boot() {
@@ -1561,6 +2034,7 @@ def admin_panel() -> HTMLResponse:
           }
         });
 
+        await detectAuthMode();
         try {
           await refresh();
         } catch (err) {

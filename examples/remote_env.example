@@ -13,6 +13,7 @@ PREDICTION_LOG_PATH=./artifacts/prediction_events.jsonl
 IMAGE_FEATURE_SIZE=128
 TRAINING_SUMMARY_PATH=./artifacts/training_summary.json
 DRIFT_REPORT_PATH=./artifacts/drift_report.json
+DRIFT_HISTORY_PATH=./artifacts/drift_history.jsonl
 
 # Auth
 AUTH_REQUIRED=true
@@ -32,6 +33,8 @@ JWT_ALGORITHM=HS256
 RATE_LIMIT_ENABLED=true
 RATE_LIMIT_REQUESTS=120
 RATE_LIMIT_WINDOW_SECONDS=60
+OPS_OIDC_TRUST_HEADERS=false
+OPS_OIDC_ALLOWED_EMAIL_DOMAINS=wearetheartmakers.com
 
 # Rollout
 ROLLOUT_MODE=single

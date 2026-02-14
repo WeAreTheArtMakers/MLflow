@@ -153,6 +153,31 @@ def demo_client(trained_model_config):
     _restore_env(previous)
 
 
+@pytest.fixture()
+def oidc_ops_client(trained_model_config):
+    env_values = {
+        **trained_model_config,
+        "AUTH_REQUIRED": "true",
+        "API_KEYS": TEST_API_KEY,
+        "JWT_SECRET": "",
+        "RATE_LIMIT_ENABLED": "true",
+        "RATE_LIMIT_REQUESTS": "200",
+        "RATE_LIMIT_WINDOW_SECONDS": "60",
+        "OPS_OIDC_TRUST_HEADERS": "true",
+        "OPS_OIDC_ALLOWED_EMAIL_DOMAINS": "example.com",
+    }
+    previous = _set_env(env_values)
+
+    import src.serve as serve
+
+    importlib.reload(serve)
+
+    with TestClient(serve.app) as client:
+        yield client
+
+    _restore_env(previous)
+
+
 def test_health_and_ready(api_client):
     health = api_client.get("/health")
     assert health.status_code == 200
@@ -162,6 +187,19 @@ def test_health_and_ready(api_client):
     ready = api_client.get("/ready")
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
+
+
+def test_home_base_url_prefers_forwarded_https(api_client):
+    resp = api_client.get(
+        "/",
+        headers={
+            "x-forwarded-proto": "https",
+            "x-forwarded-host": "api.example.com",
+            "x-forwarded-port": "443",
+        },
+    )
+    assert resp.status_code == 200
+    assert "https://api.example.com" in resp.text
 
 
 def test_metadata(api_client):
@@ -259,6 +297,19 @@ def test_ops_summary(api_client):
     assert "model" in payload
     assert "drift" in payload
     assert "rollout" in payload
+    assert "kpis" in payload
+    assert "retrain" in payload
+
+
+def test_ops_summary_oidc_proxy_headers(oidc_ops_client):
+    resp = oidc_ops_client.get("/ops/summary", headers={"x-auth-request-email": "ops@example.com"})
+    assert resp.status_code == 200
+    assert "kpis" in resp.json()
+
+
+def test_ops_summary_oidc_domain_restriction(oidc_ops_client):
+    resp = oidc_ops_client.get("/ops/summary", headers={"x-auth-request-email": "ops@outside.com"})
+    assert resp.status_code == 403
 
 
 def test_admin_panel(api_client):

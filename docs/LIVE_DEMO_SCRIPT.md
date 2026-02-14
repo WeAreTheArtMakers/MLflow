@@ -46,6 +46,12 @@ curl -sS -X POST "https://api.wearetheartmakers.com/demo/predict" \
 
 - `https://api.wearetheartmakers.com/admin`
 
+6. Optional no-CLI browser demo:
+
+- Open `https://api.wearetheartmakers.com/`
+- Use the `Try It (No CLI)` card
+- Click `Mint Token` -> `Demo Status` -> `Demo Predict`
+
 ## Talking Points (Client-Friendly)
 
 1. The model is live, monitored, and versioned.
