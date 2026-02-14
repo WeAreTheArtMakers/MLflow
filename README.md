@@ -25,6 +25,9 @@ Core capabilities:
 
 - `docs/README_TR.md`
 
+## 🎧 Podcast 🇹🇷 Türkçe
+[![Listen on SoundCloud (TR)](https://img.shields.io/badge/Dinle-SoundCloud-ff5500?logo=soundcloud&logoColor=white)](https://soundcloud.com/watam-pods-v2/artpulse-podcast-tr)
+
 ## Live Endpoints (Production)
 
 - Production API: `https://api.wearetheartmakers.com`
