@@ -38,6 +38,11 @@ Core capabilities:
 - Swagger: `https://api.wearetheartmakers.com/docs`
 - Ops Panel: `https://api.wearetheartmakers.com/admin`
 
+## Uptime Status
+
+[![Uptime Health](https://uptime.betterstack.com/status-badges/v1/monitor/2f7wg.svg)](https://uptime.betterstack.com/?utm_source=status_badge)
+[![Uptime Ready](https://uptime.betterstack.com/status-badges/v1/monitor/2f7wf.svg)](https://uptime.betterstack.com/?utm_source=status_badge)
+
 ## Business Impact
 
 Representative KPI targets for client-facing demos:
