@@ -28,6 +28,10 @@ Core capabilities:
 ## 🎧 Podcast 🇹🇷 Türkçe
 [![Listen on SoundCloud (TR)](https://img.shields.io/badge/Dinle-SoundCloud-ff5500?logo=soundcloud&logoColor=white)](https://soundcloud.com/watam-pods-v2/artpulse-podcast-tr)
 
+## License
+
+- `LICENSE` (Proprietary, All Rights Reserved)
+
 ## Live Endpoints (Production)
 
 - Production API: `https://api.wearetheartmakers.com`
@@ -146,6 +150,10 @@ curl -sS -X POST "http://localhost:8000/predict" \
 
 JWT mode is also supported (HS256) by setting `JWT_SECRET`.
 
+Latency histogram precision can be tuned without code changes:
+
+- `HTTP_LATENCY_BUCKETS_SECONDS=0.001,0.0025,0.005,0.01,0.02,0.03,0.05,0.075,0.1,0.15,0.2,0.3,0.5,1.0,2.0`
+
 Public demo mode is controlled separately:
 
 - `DEMO_ENABLED=true|false`
@@ -226,6 +234,20 @@ Outputs:
 - `loadtest/k6/k6-summary.json`
 - `artifacts/loadtest_report.md`
 
+Generate one-page business impact proof:
+
+```bash
+make business-impact-report \
+  PUBLIC_API_URL="https://api.wearetheartmakers.com" \
+  DEPLOY_LEAD_TIME_MIN="12" \
+  ROLLBACK_TIME_MIN="2"
+```
+
+Output:
+
+- `artifacts/business_impact_onepager.md`
+- Details: `docs/BUSINESS_IMPACT_REPORT.md`
+
 ## Drift Monitoring + Retraining
 
 ```bash
@@ -257,6 +279,10 @@ Workflows in `.github/workflows/`:
 - `run_quality_gate` + gate thresholds (`gate_p95_ms`, `gate_error_rate_max`, `gate_drift_score_max`)
 
 When the gate fails, workflow automatically executes `kubectl rollout undo` and marks deployment as failed.
+
+Manual promotion + rollback drill runbook:
+
+- `docs/PROMOTION_ROLLBACK_TEST.md`
 
 Security setup guide:
 
@@ -394,6 +420,95 @@ Detailed setup runbook:
 Detailed package document:
 
 - `docs/COMMERCIAL_PACKAGES.md`
+- `docs/COMMERCIAL_OFFERING.md`
+
+## Ready To Build Next (Registry + OIDC + Uptime + p95)
+
+Use this checklist as the next implementation pack.
+
+### 1) Activate Remote MLflow Registry + Aliases
+
+Goal: move from `registry-disabled` to real `champion/challenger` version management.
+
+Set in staging and production runtime env:
+
+```bash
+MLFLOW_TRACKING_URI=https://mlflow.<your-domain>
+MLFLOW_REGISTRY_URI=https://mlflow.<your-domain>
+USE_MODEL_REGISTRY_ALIAS=true
+MODEL_NAME=artpulse-classifier
+MODEL_ALIAS=champion
+CANDIDATE_MODEL_ALIAS=challenger
+```
+
+Acceptance criteria:
+
+- `/health` shows `model_registry.enabled=true`.
+- `/ops/summary` shows alias versions as numeric versions (not `registry-disabled`).
+- `champion`/`challenger` can be promoted without changing app code.
+
+### 2) Enable OIDC-Based Ops Access
+
+Goal: corporate login for `/admin` and `/ops/summary` (instead of shared API key only).
+
+Set in runtime env (staging first):
+
+```bash
+OPS_OIDC_TRUST_HEADERS=true
+OPS_OIDC_ALLOWED_EMAIL_DOMAINS=wearetheartmakers.com
+AUTH_REQUIRED=true
+```
+
+Ingress/auth gateway requirements:
+
+- Add `oauth2-proxy` or equivalent auth layer in front of `/admin` and `/ops/*`.
+- Forward trusted identity header (`X-Auth-Request-Email`) to ArtPulse.
+- Block direct public bypass to protected routes.
+
+Acceptance criteria:
+
+- Allowed corporate emails can open `/admin` without manually pasting API key.
+- Non-allowed emails are rejected.
+- Access events appear in SIEM audit logs.
+
+### 3) Uptime Monitoring + Alerting (1-Minute)
+
+Goal: detect incidents before clients report them.
+
+Minimum monitoring baseline:
+
+1. Monitor `https://api.wearetheartmakers.com/health` every `1 minute`.
+2. Monitor `https://api.wearetheartmakers.com/ready` every `1 minute`.
+3. Warning at `2` consecutive failures, critical at `5`.
+4. Alerts to Email + Slack (on-call channel).
+5. Repeat for staging with lower severity policy.
+
+Reference runbook:
+
+- `docs/UPTIME_ALERTS_SETUP.md`
+
+### 4) p95 Latency Bucket Tuning
+
+Goal: improve p95 precision (avoid over-coarse p95 values).
+
+Update latency buckets in `src/serve.py` (`HTTP_LATENCY_BUCKETS`) to denser values around 5-300 ms, for example:
+
+```python
+HTTP_LATENCY_BUCKETS = (
+    0.001, 0.0025, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075,
+    0.1, 0.15, 0.2, 0.3, 0.5, 1.0, 2.0
+)
+```
+
+Optional hardening:
+
+- Read buckets from env (e.g. `HTTP_LATENCY_BUCKETS_MS`) with safe defaults.
+
+Acceptance criteria:
+
+- `/ops/summary` p95 values are stable and realistic under load.
+- `/metrics` histogram buckets reflect the new granularity.
+- Quality gate thresholds (`gate_p95_ms`) map correctly to observed p95.
 
 ## Development Recommendations
 
@@ -412,6 +527,7 @@ src/serve.py                   # API auth, rollout routing, metrics, admin panel
 src/monitor_drift.py           # drift score computation
 src/retrain_job.py             # retraining automation
 src/loadtest_report.py         # k6 summary -> markdown report
+src/business_impact_report.py  # one-page KPI proof package
 loadtest/k6/predict.js         # API performance test scenario
 observability/docker-compose.yml
 k8s/deployment.yaml

@@ -20,11 +20,13 @@ CANARY_TRAFFIC_PERCENT?=0
 CANDIDATE_MODEL_ALIAS?=challenger
 ACTIVE_COLOR?=blue
 BLUE_GREEN_TRAFFIC_PERCENT?=0
+DEPLOY_LEAD_TIME_MIN?=
+ROLLBACK_TIME_MIN?=
 
-.PHONY: help venv install train train-small generate-images train-images demo demo-image serve ui test predict predict-image demo-token demo-status demo-predict staging-demo check-public-tls monitor-drift retrain promote-alias monitoring-up monitoring-down metrics ops-summary loadtest loadtest-report docker-build docker-run k8s-apply k8s-apply-public-staging k8s-apply-public-production clean
+.PHONY: help venv install train train-small generate-images train-images demo demo-image serve ui test predict predict-image demo-token demo-status demo-predict staging-demo check-public-tls monitor-drift retrain promote-alias monitoring-up monitoring-down metrics ops-summary loadtest loadtest-report business-impact-report docker-build docker-run k8s-apply k8s-apply-public-staging k8s-apply-public-production clean
 
 help:
-	@echo "Targets: venv install train train-small generate-images train-images demo demo-image serve ui test predict predict-image demo-token demo-status demo-predict staging-demo check-public-tls monitor-drift retrain promote-alias monitoring-up monitoring-down metrics ops-summary loadtest loadtest-report docker-build docker-run k8s-apply k8s-apply-public-staging k8s-apply-public-production clean"
+	@echo "Targets: venv install train train-small generate-images train-images demo demo-image serve ui test predict predict-image demo-token demo-status demo-predict staging-demo check-public-tls monitor-drift retrain promote-alias monitoring-up monitoring-down metrics ops-summary loadtest loadtest-report business-impact-report docker-build docker-run k8s-apply k8s-apply-public-staging k8s-apply-public-production clean"
 
 venv:
 	$(PYTHON) -m venv $(VENV)
@@ -129,6 +131,18 @@ loadtest:
 
 loadtest-report:
 	$(PY) -m src.loadtest_report --input loadtest/k6/k6-summary.json --output artifacts/loadtest_report.md
+
+business-impact-report:
+	$(PY) -m src.business_impact_report \
+	  --training-summary artifacts/training_summary.json \
+	  --drift-report artifacts/drift_report.json \
+	  --loadtest-summary loadtest/k6/k6-summary.json \
+	  --release-gate-report artifacts/release_gate_report.json \
+	  --environment production \
+	  --api-base-url "$(PUBLIC_API_URL)" \
+	  --deploy-lead-time-min "$(DEPLOY_LEAD_TIME_MIN)" \
+	  --rollback-time-min "$(ROLLBACK_TIME_MIN)" \
+	  --output artifacts/business_impact_onepager.md
 
 docker-build:
 	docker build -t artpulse:latest .

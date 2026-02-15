@@ -50,3 +50,26 @@ Use a short payload in alerts:
 1. Trigger one controlled failure in staging and confirm alert arrives.
 2. Verify recovery notifications are sent.
 3. Confirm on-call backup recipient also receives alerts.
+
+## Inputs Needed From You (to enable now)
+
+Provide these once and monitoring can be activated immediately:
+
+1. Monitoring provider choice: `Better Stack` or `UptimeRobot`.
+2. Primary alert email (for warnings).
+3. Secondary/on-call backup email (for critical).
+4. Slack incoming webhook URL (or channel + app integration method).
+5. Escalation policy:
+   - Warning trigger: default `2 failures`
+   - Critical trigger: default `5 failures`
+   - Repeat interval while down: default `5 minutes`
+6. Maintenance window preference (UTC) for planned deploys.
+
+Current endpoints to monitor:
+
+- Production:
+  - `https://api.wearetheartmakers.com/health`
+  - `https://api.wearetheartmakers.com/ready`
+- Staging:
+  - `https://api.staging.wearetheartmakers.com/health`
+  - `https://api.staging.wearetheartmakers.com/ready`

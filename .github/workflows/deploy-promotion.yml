@@ -271,6 +271,14 @@ jobs:
           echo "Release quality gate failed; deployment rolled back."
           exit 1
 
+      - name: Upload release gate report
+        if: ${{ inputs.run_quality_gate && always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-report-${{ inputs.environment }}-${{ github.run_id }}
+          if-no-files-found: warn
+          path: artifacts/release_gate_report.json
+
       - name: Optional staging smoke test
         if: ${{ inputs.environment == 'staging' && vars.STAGING_API_URL != '' }}
         env:

@@ -33,6 +33,9 @@ JWT_ALGORITHM=HS256
 RATE_LIMIT_ENABLED=true
 RATE_LIMIT_REQUESTS=120
 RATE_LIMIT_WINDOW_SECONDS=60
+# Optional: comma-separated latency histogram buckets in seconds
+# Keep ascending values for better p95 precision.
+HTTP_LATENCY_BUCKETS_SECONDS=0.001,0.0025,0.005,0.01,0.02,0.03,0.05,0.075,0.1,0.15,0.2,0.3,0.5,1.0,2.0
 OPS_OIDC_TRUST_HEADERS=false
 OPS_OIDC_ALLOWED_EMAIL_DOMAINS=wearetheartmakers.com
 

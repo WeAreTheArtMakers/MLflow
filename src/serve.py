@@ -23,8 +23,51 @@ from src.features import FEATURE_ORDER, LABELS, extract_image_features_from_byte
 app = FastAPI(title="ArtPulse API", version="0.5.0")
 
 
-HTTP_LATENCY_BUCKETS: Tuple[float, ...] = (0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.2, 0.5, 1.0, 2.0)
+DEFAULT_HTTP_LATENCY_BUCKETS: Tuple[float, ...] = (
+    0.001,
+    0.0025,
+    0.005,
+    0.01,
+    0.02,
+    0.03,
+    0.05,
+    0.075,
+    0.1,
+    0.15,
+    0.2,
+    0.3,
+    0.5,
+    1.0,
+    2.0,
+)
 METRICS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+
+
+def _load_http_latency_buckets() -> Tuple[float, ...]:
+    raw = os.getenv("HTTP_LATENCY_BUCKETS_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_HTTP_LATENCY_BUCKETS
+
+    parsed: List[float] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            value = float(token)
+        except ValueError:
+            return DEFAULT_HTTP_LATENCY_BUCKETS
+        if value <= 0:
+            return DEFAULT_HTTP_LATENCY_BUCKETS
+        parsed.append(value)
+
+    if len(parsed) < 3:
+        return DEFAULT_HTTP_LATENCY_BUCKETS
+
+    return tuple(sorted(set(parsed)))
+
+
+HTTP_LATENCY_BUCKETS: Tuple[float, ...] = _load_http_latency_buckets()
 
 
 class FeatureRow(BaseModel):

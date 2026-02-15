@@ -103,3 +103,40 @@ jobs:
             --model-name "$MODEL_NAME" \
             --model-alias challenger \
             $([ "$ONLY_IF_DRIFT" = "true" ] && echo "--only-if-drift" || true)
+
+      - name: Generate business impact one-pager
+        env:
+          ENV_NAME: ${{ inputs.environment || 'staging' }}
+          DEPLOY_LEAD_TIME_MIN: ${{ vars.DEPLOY_LEAD_TIME_MIN }}
+          ROLLBACK_TIME_MIN: ${{ vars.ROLLBACK_TIME_MIN }}
+          STAGING_API_URL: ${{ vars.STAGING_API_URL }}
+          PROD_API_URL: ${{ vars.PROD_API_URL }}
+        run: |
+          set -euo pipefail
+          API_URL="$STAGING_API_URL"
+          if [[ "$ENV_NAME" = "production" && -n "${PROD_API_URL:-}" ]]; then
+            API_URL="$PROD_API_URL"
+          fi
+          python3 -m src.business_impact_report \
+            --training-summary artifacts/training_summary.json \
+            --drift-report artifacts/drift_report.json \
+            --loadtest-summary loadtest/k6/k6-summary.json \
+            --release-gate-report artifacts/release_gate_report.json \
+            --environment "$ENV_NAME" \
+            --api-base-url "${API_URL:-n/a}" \
+            --deploy-lead-time-min "${DEPLOY_LEAD_TIME_MIN:-}" \
+            --rollback-time-min "${ROLLBACK_TIME_MIN:-}" \
+            --output artifacts/business_impact_onepager.md
+
+      - name: Upload retrain evidence package
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrain-evidence-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            artifacts/training_summary.json
+            artifacts/drift_report.json
+            artifacts/drift_history.jsonl
+            artifacts/data_quality_report.json
+            artifacts/business_impact_onepager.md
