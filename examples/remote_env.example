@@ -18,6 +18,8 @@ DRIFT_HISTORY_PATH=./artifacts/drift_history.jsonl
 # Auth
 AUTH_REQUIRED=true
 API_KEYS=replace-with-strong-key
+VIEWER_API_KEYS=replace-with-viewer-key
+CONTROL_API_KEYS=replace-with-controller-key
 DEMO_ENABLED=true
 DEMO_JWK_CURRENT_KID=demo-v1
 DEMO_JWK_KEYS_JSON={"demo-v1":"replace-with-strong-demo-secret","demo-v2":"next-rotation-secret"}
@@ -28,6 +30,7 @@ DEMO_RATE_LIMIT_REQUESTS=30
 DEMO_RATE_LIMIT_WINDOW_SECONDS=60
 SIEM_AUDIT_ENABLED=true
 SIEM_AUDIT_LOG_PATH=./artifacts/siem_audit_events.jsonl
+CONTROL_AUDIT_LOG_PATH=./artifacts/control_audit_events.jsonl
 JWT_SECRET=
 JWT_ALGORITHM=HS256
 RATE_LIMIT_ENABLED=true
@@ -38,6 +41,7 @@ RATE_LIMIT_WINDOW_SECONDS=60
 HTTP_LATENCY_BUCKETS_SECONDS=0.001,0.0025,0.005,0.01,0.02,0.03,0.05,0.075,0.1,0.15,0.2,0.3,0.5,1.0,2.0
 OPS_OIDC_TRUST_HEADERS=false
 OPS_OIDC_ALLOWED_EMAIL_DOMAINS=wearetheartmakers.com
+RUNTIME_CONFIG_PATH=./artifacts/runtime_overrides.json
 
 # Rollout
 ROLLOUT_MODE=single

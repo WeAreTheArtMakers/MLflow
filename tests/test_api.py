@@ -11,7 +11,11 @@ from PIL import Image
 from src.train import train_models
 
 TEST_API_KEY = "test-api-key"
+TEST_VIEWER_KEY = "viewer-key"
+TEST_CONTROL_KEY = "control-key"
 AUTH_HEADERS = {"x-api-key": TEST_API_KEY}
+VIEWER_HEADERS = {"x-api-key": TEST_VIEWER_KEY}
+CONTROL_HEADERS = {"x-api-key": TEST_CONTROL_KEY}
 
 
 def _set_env(values: dict[str, str]) -> dict[str, str | None]:
@@ -28,6 +32,14 @@ def _restore_env(previous: dict[str, str | None]) -> None:
             os.environ.pop(key, None)
             continue
         os.environ[key] = value
+
+
+def _reset_runtime_files(env_values: dict[str, str]) -> None:
+    for key in ("RUNTIME_CONFIG_PATH", "CONTROL_AUDIT_LOG_PATH"):
+        path_str = env_values.get(key)
+        if not path_str:
+            continue
+        Path(path_str).unlink(missing_ok=True)
 
 
 @pytest.fixture(scope="module")
@@ -50,6 +62,8 @@ def trained_model_config(tmp_path_factory):
         "MLFLOW_EXPERIMENT_NAME": "artpulse_test",
         "MODEL_URI": summary["best"]["model_uri"],
         "MODEL_URI_FILE": str(Path(output_dir) / "latest_model_uri.txt"),
+        "RUNTIME_CONFIG_PATH": str(Path(output_dir) / "runtime_overrides.json"),
+        "CONTROL_AUDIT_LOG_PATH": str(Path(output_dir) / "control_audit_events.jsonl"),
     }
 
 
@@ -65,6 +79,7 @@ def api_client(trained_model_config):
         "RATE_LIMIT_WINDOW_SECONDS": "60",
     }
     previous = _set_env(env_values)
+    _reset_runtime_files(env_values)
 
     import src.serve as serve
 
@@ -88,6 +103,7 @@ def rate_limited_client(trained_model_config):
         "RATE_LIMIT_WINDOW_SECONDS": "60",
     }
     previous = _set_env(env_values)
+    _reset_runtime_files(env_values)
 
     import src.serve as serve
 
@@ -114,6 +130,7 @@ def canary_client(trained_model_config):
         "CANDIDATE_MODEL_URI": trained_model_config["MODEL_URI"],
     }
     previous = _set_env(env_values)
+    _reset_runtime_files(env_values)
 
     import src.serve as serve
 
@@ -142,6 +159,7 @@ def demo_client(trained_model_config):
         "RATE_LIMIT_WINDOW_SECONDS": "60",
     }
     previous = _set_env(env_values)
+    _reset_runtime_files(env_values)
 
     import src.serve as serve
 
@@ -167,6 +185,33 @@ def oidc_ops_client(trained_model_config):
         "OPS_OIDC_ALLOWED_EMAIL_DOMAINS": "example.com",
     }
     previous = _set_env(env_values)
+    _reset_runtime_files(env_values)
+
+    import src.serve as serve
+
+    importlib.reload(serve)
+
+    with TestClient(serve.app) as client:
+        yield client
+
+    _restore_env(previous)
+
+
+@pytest.fixture()
+def control_client(trained_model_config):
+    env_values = {
+        **trained_model_config,
+        "AUTH_REQUIRED": "true",
+        "API_KEYS": TEST_API_KEY,
+        "VIEWER_API_KEYS": TEST_VIEWER_KEY,
+        "CONTROL_API_KEYS": TEST_CONTROL_KEY,
+        "JWT_SECRET": "",
+        "RATE_LIMIT_ENABLED": "true",
+        "RATE_LIMIT_REQUESTS": "300",
+        "RATE_LIMIT_WINDOW_SECONDS": "60",
+    }
+    previous = _set_env(env_values)
+    _reset_runtime_files(env_values)
 
     import src.serve as serve
 
@@ -316,6 +361,85 @@ def test_admin_panel(api_client):
     resp = api_client.get("/admin")
     assert resp.status_code == 200
     assert "ArtPulse Ops Console" in resp.text
+
+
+def test_control_panel_page(control_client):
+    resp = control_client.get("/control")
+    assert resp.status_code == 200
+    assert "ArtPulse Release Center" in resp.text
+
+
+def test_viewer_and_control_keys_are_separated(control_client):
+    viewer_ok = control_client.get("/ops/summary", headers=VIEWER_HEADERS)
+    assert viewer_ok.status_code == 200
+
+    control_cannot_view = control_client.get("/ops/summary", headers=CONTROL_HEADERS)
+    assert control_cannot_view.status_code == 401
+
+    control_ok = control_client.get("/ops/control/state", headers=CONTROL_HEADERS)
+    assert control_ok.status_code == 200
+
+    viewer_cannot_control = control_client.get("/ops/control/state", headers=VIEWER_HEADERS)
+    assert viewer_cannot_control.status_code == 401
+
+
+def test_control_rollout_gate_and_audit(control_client):
+    summary = control_client.get("/ops/summary", headers=VIEWER_HEADERS)
+    assert summary.status_code == 200
+    primary_uri = summary.json()["model"]["primary_uri"]
+
+    rollout_resp = control_client.post(
+        "/ops/control/rollout",
+        headers=CONTROL_HEADERS,
+        json={
+            "mode": "canary",
+            "canary_percent": 25,
+            "candidate_model_uri": primary_uri,
+            "reload_model": True,
+            "note": "pytest rollout",
+        },
+    )
+    assert rollout_resp.status_code == 200
+    assert rollout_resp.json()["control_state"]["rollout"]["mode"] == "canary"
+
+    gate_resp = control_client.post(
+        "/ops/control/gate-check",
+        headers=CONTROL_HEADERS,
+        json={
+            "p95_latency_ms_max": 500,
+            "error_rate_max": 1.0,
+            "drift_score_max": 99.0,
+            "min_request_count": 0,
+            "auto_rollback_on_fail": False,
+            "note": "pytest gate",
+        },
+    )
+    assert gate_resp.status_code == 200
+    assert "passed" in gate_resp.json()["gate"]
+
+    rollback_resp = control_client.post(
+        "/ops/control/emergency-rollback",
+        headers=CONTROL_HEADERS,
+        json={"force_single_mode": True, "reload_model": True, "note": "pytest rollback"},
+    )
+    assert rollback_resp.status_code == 200
+    assert rollback_resp.json()["control_state"]["rollout"]["mode"] == "single"
+
+    promote_resp = control_client.post(
+        "/ops/control/promote-primary",
+        headers=CONTROL_HEADERS,
+        json={"source_model_uri": primary_uri, "reload_model": True, "note": "pytest promote"},
+    )
+    assert promote_resp.status_code == 200
+    assert promote_resp.json()["control_state"]["rollout"]["mode"] == "single"
+
+    audit_resp = control_client.get("/ops/control/audit?limit=50", headers=CONTROL_HEADERS)
+    assert audit_resp.status_code == 200
+    events = audit_resp.json()["events"]
+    assert any(evt.get("action") == "rollout_update" for evt in events)
+    assert any(evt.get("action") == "gate_check" for evt in events)
+    assert any(evt.get("action") == "emergency_rollback" for evt in events)
+    assert any(evt.get("action") == "promote_primary" for evt in events)
 
 
 def test_demo_endpoint_disabled_by_default(api_client):

@@ -8,12 +8,12 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Deque, Dict, List, Literal, Optional, Tuple
 
 import mlflow
 import mlflow.pyfunc
 import numpy as np
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from mlflow.tracking import MlflowClient
 from pydantic import BaseModel, Field
@@ -132,6 +132,38 @@ class DemoTokenResponse(BaseModel):
     issuer: str
 
 
+class RolloutUpdateRequest(BaseModel):
+    mode: Literal["single", "canary", "blue_green"] = "single"
+    canary_percent: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    blue_green_percent: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    candidate_model_uri: Optional[str] = None
+    active_color: Optional[Literal["blue", "green"]] = None
+    reload_model: bool = True
+    note: str = ""
+
+
+class PromotePrimaryRequest(BaseModel):
+    source_model_uri: Optional[str] = None
+    clear_candidate_model_uri: bool = True
+    reload_model: bool = True
+    note: str = ""
+
+
+class GateCheckRequest(BaseModel):
+    p95_latency_ms_max: float = Field(default=180.0, gt=0)
+    error_rate_max: float = Field(default=0.01, ge=0.0, le=1.0)
+    drift_score_max: float = Field(default=2.5, ge=0.0)
+    min_request_count: int = Field(default=20, ge=0)
+    auto_rollback_on_fail: bool = False
+    note: str = ""
+
+
+class EmergencyRollbackRequest(BaseModel):
+    force_single_mode: bool = False
+    reload_model: bool = True
+    note: str = ""
+
+
 _model: Optional[mlflow.pyfunc.PyFuncModel] = None
 _model_uri: str = ""
 _load_error: str = ""
@@ -153,6 +185,10 @@ _rate_limit_events: Dict[str, Deque[float]] = defaultdict(deque)
 _demo_rate_limit_lock = Lock()
 _demo_rate_limit_events: Dict[str, Deque[float]] = defaultdict(deque)
 _audit_lock = Lock()
+_runtime_config_lock = Lock()
+_runtime_config: Dict[str, object] = {}
+_last_gate_result_lock = Lock()
+_last_gate_result: Dict[str, object] = {}
 
 _secondary_model: Optional[mlflow.pyfunc.PyFuncModel] = None
 _secondary_model_uri: str = ""
@@ -205,9 +241,25 @@ def _auth_required() -> bool:
     }
 
 
+def _split_api_keys(raw: str) -> set[str]:
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
 def _api_keys() -> set[str]:
     raw = os.getenv("API_KEYS", "")
-    return {part.strip() for part in raw.split(",") if part.strip()}
+    return _split_api_keys(raw)
+
+
+def _viewer_api_keys() -> set[str]:
+    raw = os.getenv("VIEWER_API_KEYS", "")
+    parsed = _split_api_keys(raw)
+    return parsed or _api_keys()
+
+
+def _control_api_keys() -> set[str]:
+    raw = os.getenv("CONTROL_API_KEYS", "")
+    parsed = _split_api_keys(raw)
+    return parsed or _viewer_api_keys()
 
 
 def _jwt_secret() -> str:
@@ -310,20 +362,139 @@ def _siem_audit_log_path() -> Path:
     return Path(os.getenv("SIEM_AUDIT_LOG_PATH", "./artifacts/siem_audit_events.jsonl"))
 
 
-def _rollout_mode() -> str:
-    mode = os.getenv("ROLLOUT_MODE", "single").strip().lower()
-    if mode not in {"single", "canary", "blue_green"}:
+def _control_audit_log_path() -> Path:
+    return Path(os.getenv("CONTROL_AUDIT_LOG_PATH", "./artifacts/control_audit_events.jsonl"))
+
+
+def _runtime_config_path() -> Path:
+    return Path(os.getenv("RUNTIME_CONFIG_PATH", "./artifacts/runtime_overrides.json"))
+
+
+def _normalize_rollout_mode(mode: str) -> str:
+    normalized = mode.strip().lower()
+    if normalized not in {"single", "canary", "blue_green"}:
         return "single"
-    return mode
+    return normalized
+
+
+def _normalize_active_color(value: str) -> str:
+    color = value.strip().lower()
+    if color not in {"blue", "green"}:
+        return "blue"
+    return color
+
+
+def _normalize_percent_value(raw_value: object) -> float:
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        value = 0.0
+    return min(100.0, max(0.0, value))
+
+
+def _runtime_override_raw(key: str) -> object:
+    with _runtime_config_lock:
+        return _runtime_config.get(key)
+
+
+def _runtime_override_str(key: str) -> Optional[str]:
+    value = _runtime_override_raw(key)
+    if value is None:
+        return None
+    return str(value)
+
+
+def _runtime_override_percent(key: str) -> Optional[float]:
+    value = _runtime_override_raw(key)
+    if value is None:
+        return None
+    return _normalize_percent_value(value)
+
+
+def _normalize_runtime_overrides(payload: Dict[str, object]) -> Dict[str, object]:
+    normalized: Dict[str, object] = {}
+    if "rollout_mode" in payload and payload["rollout_mode"] is not None:
+        normalized["rollout_mode"] = _normalize_rollout_mode(str(payload["rollout_mode"]))
+    if "canary_traffic_percent" in payload and payload["canary_traffic_percent"] is not None:
+        normalized["canary_traffic_percent"] = _normalize_percent_value(payload["canary_traffic_percent"])
+    if "blue_green_traffic_percent" in payload and payload["blue_green_traffic_percent"] is not None:
+        normalized["blue_green_traffic_percent"] = _normalize_percent_value(payload["blue_green_traffic_percent"])
+    if "candidate_model_uri" in payload and payload["candidate_model_uri"] is not None:
+        normalized["candidate_model_uri"] = str(payload["candidate_model_uri"]).strip()
+    if "model_uri" in payload and payload["model_uri"] is not None:
+        model_uri = str(payload["model_uri"]).strip()
+        if model_uri:
+            normalized["model_uri"] = model_uri
+    if "active_color" in payload and payload["active_color"] is not None:
+        normalized["active_color"] = _normalize_active_color(str(payload["active_color"]))
+    return normalized
+
+
+def _persist_runtime_config_locked() -> None:
+    runtime_path = _runtime_config_path()
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.write_text(
+        json.dumps(_runtime_config, ensure_ascii=True, sort_keys=True, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _load_runtime_config_from_disk() -> None:
+    runtime_path = _runtime_config_path()
+    if not runtime_path.exists():
+        return
+    try:
+        payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    normalized = _normalize_runtime_overrides(payload)
+    with _runtime_config_lock:
+        _runtime_config.clear()
+        _runtime_config.update(normalized)
+
+
+def _runtime_config_snapshot() -> Dict[str, object]:
+    with _runtime_config_lock:
+        return dict(_runtime_config)
+
+
+def _update_runtime_overrides(changes: Dict[str, object], unset_keys: Optional[List[str]] = None) -> Dict[str, object]:
+    normalized_changes = _normalize_runtime_overrides(changes)
+    removed = set(unset_keys or [])
+    with _runtime_config_lock:
+        for key in removed:
+            _runtime_config.pop(key, None)
+        for key, value in normalized_changes.items():
+            _runtime_config[key] = value
+        _persist_runtime_config_locked()
+        return dict(_runtime_config)
+
+
+def _set_last_gate_result(payload: Dict[str, object]) -> None:
+    with _last_gate_result_lock:
+        _last_gate_result.clear()
+        _last_gate_result.update(payload)
+
+
+def _get_last_gate_result() -> Dict[str, object]:
+    with _last_gate_result_lock:
+        return dict(_last_gate_result)
+
+
+def _rollout_mode() -> str:
+    runtime_mode = _runtime_override_str("rollout_mode")
+    if runtime_mode is not None:
+        return _normalize_rollout_mode(runtime_mode)
+    return _normalize_rollout_mode(os.getenv("ROLLOUT_MODE", "single"))
 
 
 def _canary_traffic_percent() -> float:
-    raw = os.getenv("CANARY_TRAFFIC_PERCENT", "0")
-    try:
-        value = float(raw)
-    except ValueError:
-        value = 0.0
-    return min(100.0, max(0.0, value))
+    runtime_value = _runtime_override_percent("canary_traffic_percent")
+    if runtime_value is not None:
+        return runtime_value
+    return _normalize_percent_value(os.getenv("CANARY_TRAFFIC_PERCENT", "0"))
 
 
 def _candidate_model_alias() -> str:
@@ -331,14 +502,17 @@ def _candidate_model_alias() -> str:
 
 
 def _candidate_model_uri() -> str:
+    runtime_value = _runtime_override_str("candidate_model_uri")
+    if runtime_value is not None:
+        return runtime_value.strip()
     return os.getenv("CANDIDATE_MODEL_URI", "").strip()
 
 
 def _active_color() -> str:
-    color = os.getenv("ACTIVE_COLOR", "blue").strip().lower()
-    if color not in {"blue", "green"}:
-        return "blue"
-    return color
+    runtime_value = _runtime_override_str("active_color")
+    if runtime_value is not None:
+        return _normalize_active_color(runtime_value)
+    return _normalize_active_color(os.getenv("ACTIVE_COLOR", "blue"))
 
 
 def _blue_model_alias() -> str:
@@ -358,12 +532,10 @@ def _green_model_uri() -> str:
 
 
 def _blue_green_traffic_percent() -> float:
-    raw = os.getenv("BLUE_GREEN_TRAFFIC_PERCENT", "0")
-    try:
-        value = float(raw)
-    except ValueError:
-        value = 0.0
-    return min(100.0, max(0.0, value))
+    runtime_value = _runtime_override_percent("blue_green_traffic_percent")
+    if runtime_value is not None:
+        return runtime_value
+    return _normalize_percent_value(os.getenv("BLUE_GREEN_TRAFFIC_PERCENT", "0"))
 
 
 def _training_summary_path() -> Path:
@@ -712,6 +884,10 @@ def _apply_mlflow_uris() -> None:
 
 
 def _discover_model_uri() -> str:
+    runtime_model_uri = _runtime_override_str("model_uri")
+    if runtime_model_uri:
+        return runtime_model_uri.strip()
+
     env_model_uri = os.getenv("MODEL_URI", "").strip()
     if env_model_uri:
         return env_model_uri
@@ -927,7 +1103,26 @@ def require_auth(
     return _apply_rate_limit(identity=identity)
 
 
-def require_ops_access(
+def _authenticate_with_keyset(
+    x_api_key: Optional[str],
+    keyset: set[str],
+    missing_config_reason: str,
+    invalid_reason: str,
+    missing_reason: str,
+) -> str:
+    if not x_api_key:
+        _inc_auth_failure(missing_reason)
+        raise HTTPException(status_code=401, detail="Missing API key")
+    if not keyset:
+        _inc_auth_failure(missing_config_reason)
+        raise HTTPException(status_code=401, detail="API key auth is not configured")
+    if x_api_key not in keyset:
+        _inc_auth_failure(invalid_reason)
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return f"api_key:{x_api_key[:6]}"
+
+
+def require_viewer_access(
     authorization: Optional[str] = Header(default=None),
     x_api_key: Optional[str] = Header(default=None),
     x_auth_request_email: Optional[str] = Header(default=None),
@@ -948,8 +1143,58 @@ def require_ops_access(
                 raise HTTPException(status_code=403, detail="SSO account is not in allowed domains")
             return _apply_rate_limit(identity=f"oidc:{proxy_identity}")
 
-    identity = _authenticate_identity(authorization=authorization, x_api_key=x_api_key)
+    viewer_keys = _viewer_api_keys()
+    if x_api_key:
+        identity = _authenticate_with_keyset(
+            x_api_key=x_api_key,
+            keyset=viewer_keys,
+            missing_config_reason="viewer_api_key_not_configured",
+            invalid_reason="invalid_viewer_api_key",
+            missing_reason="viewer_api_key_missing",
+        )
+        return _apply_rate_limit(identity=identity)
+
+    identity = _authenticate_identity(authorization=authorization, x_api_key=None)
     return _apply_rate_limit(identity=identity)
+
+
+def require_control_access(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+) -> str:
+    _ = authorization
+    control_keys = _control_api_keys()
+    if x_api_key:
+        identity = _authenticate_with_keyset(
+            x_api_key=x_api_key,
+            keyset=control_keys,
+            missing_config_reason="control_api_key_not_configured",
+            invalid_reason="invalid_control_api_key",
+            missing_reason="control_api_key_missing",
+        )
+        return _apply_rate_limit(identity=f"control:{identity}")
+
+    _inc_auth_failure("missing_control_api_key")
+    raise HTTPException(status_code=401, detail="Missing control API key")
+
+
+# Backward-compatible alias used by existing tests/import paths.
+def require_ops_access(
+    authorization: Optional[str] = Header(default=None),
+    x_api_key: Optional[str] = Header(default=None),
+    x_auth_request_email: Optional[str] = Header(default=None),
+    x_auth_request_user: Optional[str] = Header(default=None),
+    x_forwarded_user: Optional[str] = Header(default=None),
+    x_user: Optional[str] = Header(default=None),
+) -> str:
+    return require_viewer_access(
+        authorization=authorization,
+        x_api_key=x_api_key,
+        x_auth_request_email=x_auth_request_email,
+        x_auth_request_user=x_auth_request_user,
+        x_forwarded_user=x_forwarded_user,
+        x_user=x_user,
+    )
 
 
 def _consume_demo_rate_limit(identity: str) -> Tuple[bool, float]:
@@ -1049,6 +1294,56 @@ def _append_audit_event(event: Dict[str, object]) -> None:
     except Exception:
         # Audit trail should not block serving traffic.
         return
+
+
+def _append_control_audit_event(
+    action: str,
+    actor: str,
+    request: Request,
+    status: str,
+    details: Dict[str, object],
+) -> None:
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "action": action,
+        "actor": actor,
+        "status": status,
+        "path": request.url.path,
+        "method": request.method,
+        "source_ip": (request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (
+            request.client.host if request.client else "unknown"
+        )),
+        "request_id": request.headers.get("x-request-id", ""),
+        "details": details,
+    }
+    try:
+        audit_path = _control_audit_log_path()
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        with _audit_lock:
+            with audit_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(event) + "\n")
+    except Exception:
+        return
+
+
+def _read_control_audit_events(limit: int = 80) -> List[Dict[str, object]]:
+    path = _control_audit_log_path()
+    if not path.exists():
+        return []
+    events: List[Dict[str, object]] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+    if limit > 0 and len(events) > limit:
+        return events[-limit:]
+    return events
 
 
 def load_model(force_reload: bool = False) -> None:
@@ -1234,12 +1529,14 @@ def _build_ops_summary() -> Dict[str, object]:
         "rollout": {
             "mode": rollout_mode,
             "secondary_percent": _secondary_traffic_percent(),
+            "candidate_model_uri": _candidate_model_uri(),
             "primary_route": "blue" if rollout_mode == "blue_green" and _active_color() == "blue" else (
                 "green" if rollout_mode == "blue_green" else "primary"
             ),
             "secondary_route": "green"
             if rollout_mode == "blue_green" and _active_color() == "blue"
             else ("blue" if rollout_mode == "blue_green" else "secondary"),
+            "runtime_overrides": _runtime_config_snapshot(),
         },
         "kpis": runtime_kpis,
         "retrain": {
@@ -1256,8 +1553,87 @@ def _build_ops_summary() -> Dict[str, object]:
             "drift_report": str(_drift_report_path()),
             "drift_history": str(_drift_history_path()),
             "prediction_log": str(_prediction_log_path()),
+            "runtime_overrides": str(_runtime_config_path()),
+            "control_audit": str(_control_audit_log_path()),
         },
     }
+
+
+def _build_control_state() -> Dict[str, object]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "rollout": {
+            "mode": _rollout_mode(),
+            "canary_percent": _canary_traffic_percent(),
+            "blue_green_percent": _blue_green_traffic_percent(),
+            "secondary_percent": _secondary_traffic_percent(),
+            "candidate_model_uri": _candidate_model_uri(),
+            "candidate_alias": _candidate_model_alias(),
+            "active_color": _active_color(),
+        },
+        "model": {
+            "primary_uri": _model_uri,
+            "secondary_uri": _secondary_model_uri,
+            "secondary_model_loaded": _secondary_model is not None,
+            "secondary_load_error": _secondary_load_error,
+            "load_error": _load_error,
+        },
+        "runtime_overrides": _runtime_config_snapshot(),
+        "last_gate_result": _get_last_gate_result(),
+    }
+
+
+def _evaluate_runtime_gate(request: GateCheckRequest) -> Dict[str, object]:
+    summary = _build_ops_summary()
+    kpis = summary.get("kpis", {}) if isinstance(summary.get("kpis"), dict) else {}
+    drift = summary.get("drift", {}) if isinstance(summary.get("drift"), dict) else {}
+
+    request_count = int(kpis.get("request_count", 0))
+    p95_latency_ms = float(kpis.get("p95_latency_ms", 0.0))
+    error_rate = float(kpis.get("error_rate", 0.0))
+    drift_score = float(drift.get("drift_score", 0.0))
+
+    checks = {
+        "request_floor_met": request_count >= request.min_request_count,
+        "p95_latency_ok": p95_latency_ms <= request.p95_latency_ms_max,
+        "error_rate_ok": error_rate <= request.error_rate_max,
+        "drift_score_ok": drift_score <= request.drift_score_max,
+    }
+    passed = all(checks.values())
+
+    result = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "passed": passed,
+        "checks": checks,
+        "thresholds": {
+            "min_request_count": request.min_request_count,
+            "p95_latency_ms_max": request.p95_latency_ms_max,
+            "error_rate_max": request.error_rate_max,
+            "drift_score_max": request.drift_score_max,
+        },
+        "observed": {
+            "request_count": request_count,
+            "p95_latency_ms": p95_latency_ms,
+            "error_rate": error_rate,
+            "drift_score": drift_score,
+        },
+    }
+    _set_last_gate_result(result)
+    return result
+
+
+def _build_runtime_changes_for_emergency_rollback(force_single_mode: bool) -> Dict[str, object]:
+    mode = _rollout_mode()
+    changes: Dict[str, object] = {}
+    if mode == "canary":
+        changes["canary_traffic_percent"] = 0.0
+    elif mode == "blue_green":
+        changes["blue_green_traffic_percent"] = 0.0
+    if force_single_mode:
+        changes["rollout_mode"] = "single"
+        changes["canary_traffic_percent"] = 0.0
+        changes["blue_green_traffic_percent"] = 0.0
+    return changes
 
 
 @app.middleware("http")
@@ -1278,7 +1654,12 @@ async def capture_http_metrics(request, call_next):
         _inc_http_request(method=method, path=path, status=status_code)
         _observe_http_latency(method=method, path=path, duration_seconds=duration)
 
-        if path.startswith("/admin") or path.startswith("/ops/summary"):
+        if (
+            path.startswith("/admin")
+            or path.startswith("/ops/summary")
+            or path.startswith("/control")
+            or path.startswith("/ops/control")
+        ):
             forwarded_for = request.headers.get("x-forwarded-for", "")
             source_ip = forwarded_for.split(",")[0].strip() if forwarded_for else (
                 request.client.host if request.client else "unknown"
@@ -1306,6 +1687,7 @@ async def capture_http_metrics(request, call_next):
 @app.on_event("startup")
 def on_startup() -> None:
     try:
+        _load_runtime_config_from_disk()
         load_model()
     except Exception as exc:
         global _load_error, _secondary_model, _secondary_model_uri, _secondary_load_error
@@ -1350,6 +1732,8 @@ def health() -> dict:
         "auth": {
             "required": _auth_required(),
             "api_keys_configured": len(_api_keys()),
+            "viewer_api_keys_configured": len(_viewer_api_keys()),
+            "control_api_keys_configured": len(_control_api_keys()),
             "jwt_enabled": bool(_jwt_secret()),
             "rate_limit_enabled": _rate_limit_enabled(),
             "rate_limit_requests": _rate_limit_requests(),
@@ -1370,6 +1754,9 @@ def health() -> dict:
         "siem_audit": {
             "enabled": _siem_audit_enabled(),
             "log_path": str(_siem_audit_log_path()),
+        },
+        "control_audit": {
+            "log_path": str(_control_audit_log_path()),
         },
         "prediction_log_path": str(_prediction_log_path()),
         "training_summary_path": str(_training_summary_path()),
@@ -1525,6 +1912,7 @@ def home(request: Request) -> HTMLResponse:
             <li><a href="/docs">Swagger /docs</a></li>
             <li><a href="/openapi.json">OpenAPI /openapi.json</a></li>
             <li><a href="/admin">Ops Panel /admin</a></li>
+            <li><a href="/control">Release Center /control</a></li>
           </ul>
         </section>
         <section class="card">
@@ -1669,7 +2057,7 @@ def ready() -> dict:
 
 
 @app.post("/reload-model")
-def reload_model(_: str = Depends(require_auth)) -> dict:
+def reload_model(_: str = Depends(require_control_access)) -> dict:
     try:
         load_model(force_reload=True)
     except Exception as exc:
@@ -1695,8 +2083,259 @@ def metadata(_: str = Depends(require_auth)) -> dict:
 
 
 @app.get("/ops/summary")
-def ops_summary(_: str = Depends(require_ops_access)) -> dict:
+def ops_summary(_: str = Depends(require_viewer_access)) -> dict:
     return _build_ops_summary()
+
+
+@app.get("/ops/control/state")
+def control_state(_: str = Depends(require_control_access)) -> dict:
+    return {
+        "status": "ok",
+        "state": _build_control_state(),
+        "summary": _build_ops_summary(),
+    }
+
+
+@app.post("/ops/control/rollout")
+def control_rollout(
+    payload: RolloutUpdateRequest,
+    request: Request,
+    actor: str = Depends(require_control_access),
+) -> dict:
+    changes: Dict[str, object] = {"rollout_mode": payload.mode}
+    if payload.canary_percent is not None:
+        changes["canary_traffic_percent"] = payload.canary_percent
+    if payload.blue_green_percent is not None:
+        changes["blue_green_traffic_percent"] = payload.blue_green_percent
+    if payload.candidate_model_uri is not None:
+        changes["candidate_model_uri"] = payload.candidate_model_uri
+    if payload.active_color is not None:
+        changes["active_color"] = payload.active_color
+
+    before = _runtime_config_snapshot()
+    after = _update_runtime_overrides(changes)
+    status = "ok"
+    error = ""
+    if payload.reload_model:
+        try:
+            load_model(force_reload=True)
+        except Exception as exc:
+            status = "reload_failed"
+            error = str(exc)
+
+    details = {
+        "before_overrides": before,
+        "after_overrides": after,
+        "applied_changes": changes,
+        "note": payload.note,
+        "reload_model": payload.reload_model,
+        "error": error,
+    }
+    _append_control_audit_event(
+        action="rollout_update",
+        actor=actor,
+        request=request,
+        status=status,
+        details=details,
+    )
+
+    if error:
+        raise HTTPException(status_code=500, detail=f"Rollout updated but reload failed: {error}")
+    return {
+        "status": status,
+        "runtime_overrides": after,
+        "control_state": _build_control_state(),
+    }
+
+
+@app.post("/ops/control/reload-model")
+def control_reload_model(
+    request: Request,
+    actor: str = Depends(require_control_access),
+) -> dict:
+    try:
+        load_model(force_reload=True)
+    except Exception as exc:
+        _append_control_audit_event(
+            action="reload_model",
+            actor=actor,
+            request=request,
+            status="failed",
+            details={"error": str(exc)},
+        )
+        raise HTTPException(status_code=500, detail=f"Reload failed: {exc}") from exc
+
+    _append_control_audit_event(
+        action="reload_model",
+        actor=actor,
+        request=request,
+        status="ok",
+        details={"primary_uri": _model_uri, "secondary_uri": _secondary_model_uri},
+    )
+    return {
+        "status": "reloaded",
+        "control_state": _build_control_state(),
+    }
+
+
+@app.post("/ops/control/emergency-rollback")
+def control_emergency_rollback(
+    payload: EmergencyRollbackRequest,
+    request: Request,
+    actor: str = Depends(require_control_access),
+) -> dict:
+    changes = _build_runtime_changes_for_emergency_rollback(force_single_mode=payload.force_single_mode)
+    before = _runtime_config_snapshot()
+    after = _update_runtime_overrides(changes)
+    status = "ok"
+    error = ""
+    if payload.reload_model:
+        try:
+            load_model(force_reload=True)
+        except Exception as exc:
+            status = "reload_failed"
+            error = str(exc)
+
+    details = {
+        "before_overrides": before,
+        "after_overrides": after,
+        "applied_changes": changes,
+        "force_single_mode": payload.force_single_mode,
+        "note": payload.note,
+        "error": error,
+    }
+    _append_control_audit_event(
+        action="emergency_rollback",
+        actor=actor,
+        request=request,
+        status=status,
+        details=details,
+    )
+    if error:
+        raise HTTPException(status_code=500, detail=f"Emergency rollback applied but reload failed: {error}")
+    return {
+        "status": status,
+        "runtime_overrides": after,
+        "control_state": _build_control_state(),
+    }
+
+
+@app.post("/ops/control/promote-primary")
+def control_promote_primary(
+    payload: PromotePrimaryRequest,
+    request: Request,
+    actor: str = Depends(require_control_access),
+) -> dict:
+    source_uri = (payload.source_model_uri or "").strip() or _candidate_model_uri().strip() or _secondary_model_uri.strip()
+    if not source_uri:
+        raise HTTPException(
+            status_code=400,
+            detail="No source model URI available. Provide source_model_uri or configure candidate_model_uri.",
+        )
+
+    changes: Dict[str, object] = {
+        "model_uri": source_uri,
+        "rollout_mode": "single",
+        "canary_traffic_percent": 0.0,
+        "blue_green_traffic_percent": 0.0,
+    }
+    if payload.clear_candidate_model_uri:
+        changes["candidate_model_uri"] = ""
+
+    before = _runtime_config_snapshot()
+    after = _update_runtime_overrides(changes)
+
+    status = "ok"
+    error = ""
+    if payload.reload_model:
+        try:
+            load_model(force_reload=True)
+        except Exception as exc:
+            status = "reload_failed"
+            error = str(exc)
+
+    details = {
+        "source_model_uri": source_uri,
+        "before_overrides": before,
+        "after_overrides": after,
+        "clear_candidate_model_uri": payload.clear_candidate_model_uri,
+        "note": payload.note,
+        "error": error,
+    }
+    _append_control_audit_event(
+        action="promote_primary",
+        actor=actor,
+        request=request,
+        status=status,
+        details=details,
+    )
+    if error:
+        raise HTTPException(status_code=500, detail=f"Promotion applied but reload failed: {error}")
+    return {
+        "status": status,
+        "runtime_overrides": after,
+        "control_state": _build_control_state(),
+    }
+
+
+@app.post("/ops/control/gate-check")
+def control_gate_check(
+    payload: GateCheckRequest,
+    request: Request,
+    actor: str = Depends(require_control_access),
+) -> dict:
+    result = _evaluate_runtime_gate(payload)
+    rollback_details: Dict[str, object] = {
+        "requested": bool(payload.auto_rollback_on_fail),
+        "applied": False,
+        "changes": {},
+        "error": "",
+    }
+
+    if payload.auto_rollback_on_fail and not bool(result.get("passed", False)):
+        changes = _build_runtime_changes_for_emergency_rollback(force_single_mode=False)
+        rollback_details["changes"] = changes
+        if changes:
+            _update_runtime_overrides(changes)
+            try:
+                load_model(force_reload=True)
+                rollback_details["applied"] = True
+            except Exception as exc:
+                rollback_details["error"] = str(exc)
+
+    _append_control_audit_event(
+        action="gate_check",
+        actor=actor,
+        request=request,
+        status="ok" if result.get("passed", False) else "failed",
+        details={
+            "result": result,
+            "rollback": rollback_details,
+            "note": payload.note,
+        },
+    )
+    if rollback_details["error"]:
+        raise HTTPException(status_code=500, detail=f"Gate check completed, rollback reload failed: {rollback_details['error']}")
+
+    return {
+        "status": "ok",
+        "gate": result,
+        "rollback": rollback_details,
+        "control_state": _build_control_state(),
+    }
+
+
+@app.get("/ops/control/audit")
+def control_audit(
+    limit: int = Query(default=80, ge=1, le=500),
+    _: str = Depends(require_control_access),
+) -> dict:
+    events = _read_control_audit_events(limit=limit)
+    return {
+        "status": "ok",
+        "count": len(events),
+        "events": events,
+    }
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -1851,8 +2490,8 @@ def admin_panel() -> HTMLResponse:
       </div>
       <div class="grid">
         <section class="card full">
-          <div class="label">Ops API Key</div>
-          <div class="sub">Use `x-api-key` or corporate SSO (if OIDC header mode is enabled).</div>
+          <div class="label">Viewer API Key</div>
+          <div class="sub">Use `VIEWER_API_KEYS` with `x-api-key` or corporate SSO (if OIDC header mode is enabled).</div>
           <div class="auth-row">
             <input id="apiKeyInput" type="password" placeholder="Paste API key" autocomplete="off" />
             <button id="saveKeyBtn" type="button">Save key</button>
@@ -1914,7 +2553,7 @@ def admin_panel() -> HTMLResponse:
       </div>
     </main>
     <script>
-      let apiKey = localStorage.getItem("artpulse_api_key") || "";
+      let apiKey = localStorage.getItem("artpulse_viewer_api_key") || localStorage.getItem("artpulse_api_key") || "";
       let refreshTimer = null;
       let oidcMode = false;
       const apiKeyInput = document.getElementById("apiKeyInput");
@@ -1964,6 +2603,7 @@ def admin_panel() -> HTMLResponse:
           return;
         }
         apiKey = value;
+        localStorage.setItem("artpulse_viewer_api_key", value);
         localStorage.setItem("artpulse_api_key", value);
         setAuthHint("API key saved. Refreshing panel data...", false);
         refresh().catch((err) => {
@@ -1974,6 +2614,7 @@ def admin_panel() -> HTMLResponse:
 
       function clearApiKey() {
         apiKey = "";
+        localStorage.removeItem("artpulse_viewer_api_key");
         localStorage.removeItem("artpulse_api_key");
         apiKeyInput.value = "";
         setAuthHint("API key cleared.", false);
@@ -2089,6 +2730,419 @@ def admin_panel() -> HTMLResponse:
             setText("ts", err.message);
             setAuthHint(err.message, true);
           });
+        }, 15000);
+      }
+
+      boot();
+    </script>
+  </body>
+</html>
+    """
+    return HTMLResponse(content=html)
+
+
+@app.get("/control", response_class=HTMLResponse)
+def control_panel() -> HTMLResponse:
+    html = """
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ArtPulse Release Center</title>
+    <style>
+      :root {
+        --bg: #0b1220;
+        --card: #121d35;
+        --line: rgba(255, 255, 255, 0.12);
+        --text: #eef3fb;
+        --muted: #a8b6cc;
+        --accent: #58d68d;
+        --warn: #f39c12;
+        --danger: #ff6b6b;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--text);
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 10% 0%, rgba(88, 214, 141, 0.14), transparent 30%),
+          radial-gradient(circle at 90% 0%, rgba(243, 156, 18, 0.14), transparent 28%),
+          var(--bg);
+      }
+      main {
+        max-width: 1160px;
+        margin: 0 auto;
+        padding: 24px 22px 38px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 28px;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .grid {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 14px;
+      }
+      .card {
+        grid-column: span 4;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+        background: linear-gradient(165deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+      }
+      .card.wide { grid-column: span 6; }
+      .card.full { grid-column: span 12; }
+      .label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 11px;
+      }
+      .value {
+        margin-top: 6px;
+        font-size: 22px;
+        font-weight: 700;
+        word-break: break-word;
+      }
+      .mono {
+        font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+        font-size: 12px;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      input, select, button {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.28);
+        color: var(--text);
+        padding: 10px 12px;
+        font-size: 14px;
+      }
+      input, select {
+        min-width: 180px;
+      }
+      button {
+        cursor: pointer;
+        background: var(--accent);
+        color: #102118;
+        font-weight: 700;
+        border: 0;
+      }
+      button.ghost {
+        background: transparent;
+        border: 1px solid var(--line);
+        color: var(--text);
+      }
+      button.warn { background: var(--warn); color: #251d08; }
+      button.danger { background: var(--danger); color: #2b1414; }
+      .meta {
+        margin-top: 10px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .status-ok { color: var(--accent); }
+      .status-warn { color: var(--warn); }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 10px;
+      }
+      th, td {
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        padding: 8px 6px;
+        font-size: 12px;
+      }
+      th { color: var(--muted); font-weight: 600; }
+      @media (max-width: 920px) {
+        .card, .card.wide, .card.full { grid-column: span 12; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>ArtPulse Release Center</h1>
+      <div class="sub">Control rollout, run gate checks, promote safely, and rollback fast from one panel.</div>
+
+      <div class="grid">
+        <section class="card full">
+          <div class="label">Controller API Key</div>
+          <div class="sub">Uses `CONTROL_API_KEYS` (fallback: `VIEWER_API_KEYS` / `API_KEYS`).</div>
+          <div class="row">
+            <input id="controlKey" type="password" placeholder="Paste control key" autocomplete="off" style="min-width:340px; flex:1 1 460px;" />
+            <button id="saveControlKey" type="button">Save key</button>
+            <button id="clearControlKey" type="button" class="ghost">Clear</button>
+          </div>
+          <div id="authStatus" class="meta">Key is stored in this browser only.</div>
+        </section>
+
+        <section class="card">
+          <div class="label">Primary Model</div>
+          <div id="primaryUri" class="value mono">-</div>
+        </section>
+        <section class="card">
+          <div class="label">Secondary Model</div>
+          <div id="secondaryUri" class="value mono">-</div>
+        </section>
+        <section class="card">
+          <div class="label">Rollout Mode</div>
+          <div id="rolloutModeNow" class="value">single</div>
+          <div id="secondaryPercentNow" class="meta">secondary: 0%</div>
+        </section>
+
+        <section class="card full">
+          <div class="label">Rollout Controls</div>
+          <div class="row">
+            <select id="modeInput">
+              <option value="single">single</option>
+              <option value="canary">canary</option>
+              <option value="blue_green">blue_green</option>
+            </select>
+            <input id="canaryInput" type="number" min="0" max="100" step="1" placeholder="Canary %" />
+            <input id="blueGreenInput" type="number" min="0" max="100" step="1" placeholder="Blue/Green %" />
+            <select id="activeColorInput">
+              <option value="">active color (optional)</option>
+              <option value="blue">blue</option>
+              <option value="green">green</option>
+            </select>
+            <input id="candidateUriInput" type="text" placeholder="Candidate model URI (runs:/.../model)" style="min-width:320px; flex:1 1 480px;" />
+            <button id="applyRolloutBtn" type="button">Apply rollout</button>
+          </div>
+          <div class="row">
+            <button id="reloadBtn" type="button" class="ghost">Reload model</button>
+            <button id="promoteBtn" type="button" class="warn">Promote to primary</button>
+            <button id="rollbackBtn" type="button" class="danger">Emergency rollback (%0)</button>
+          </div>
+          <div class="row">
+            <input id="promoteSourceInput" type="text" placeholder="Promote source URI (optional; defaults to candidate/secondary)" style="min-width:420px; flex:1 1 520px;" />
+          </div>
+          <div id="controlStatus" class="meta">No action yet.</div>
+        </section>
+
+        <section class="card wide">
+          <div class="label">Gate Check</div>
+          <div class="row">
+            <input id="p95MaxInput" type="number" min="1" step="1" value="180" placeholder="p95 max (ms)" />
+            <input id="errorMaxInput" type="number" min="0" max="1" step="0.001" value="0.01" placeholder="5xx max rate" />
+            <input id="driftMaxInput" type="number" min="0" step="0.1" value="2.5" placeholder="drift max" />
+            <input id="minReqInput" type="number" min="0" step="1" value="20" placeholder="min requests" />
+            <button id="runGateBtn" type="button">Run gate check</button>
+            <button id="runGateRollbackBtn" type="button" class="warn">Run gate + auto rollback</button>
+          </div>
+          <div id="gateResult" class="meta">Gate not run yet.</div>
+        </section>
+
+        <section class="card wide">
+          <div class="label">Runtime Overrides</div>
+          <pre id="runtimeOverrides" class="mono">-</pre>
+        </section>
+
+        <section class="card full">
+          <div class="label">Control Audit Log</div>
+          <table>
+            <thead>
+              <tr><th>Time</th><th>Actor</th><th>Action</th><th>Status</th><th>Path</th></tr>
+            </thead>
+            <tbody id="auditRows"></tbody>
+          </table>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      let controlKey = localStorage.getItem("artpulse_control_api_key") || "";
+      let refreshTimer = null;
+
+      const controlKeyInput = document.getElementById("controlKey");
+      const authStatus = document.getElementById("authStatus");
+      const controlStatus = document.getElementById("controlStatus");
+      const gateResult = document.getElementById("gateResult");
+
+      if (controlKey) {
+        controlKeyInput.value = controlKey;
+        authStatus.textContent = "Control key loaded from browser storage.";
+      }
+
+      function setText(id, value) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = value ?? "-";
+      }
+
+      function setMeta(el, text, isError = false) {
+        el.textContent = text;
+        el.classList.remove("status-ok", "status-warn");
+        el.classList.add(isError ? "status-warn" : "status-ok");
+      }
+
+      function headers() {
+        const h = { "content-type": "application/json" };
+        if (controlKey) h["x-api-key"] = controlKey;
+        return h;
+      }
+
+      async function controlFetch(path, options = {}) {
+        const opts = { ...options };
+        opts.headers = options.headers || headers();
+        const res = await fetch(path, opts);
+        if (res.status === 401) throw new Error("Unauthorized: check control key.");
+        if (!res.ok) {
+          const body = await res.text();
+          throw new Error(body || `Request failed (${res.status})`);
+        }
+        return res.json();
+      }
+
+      function saveControlKey() {
+        const value = controlKeyInput.value.trim();
+        if (!value) {
+          setMeta(authStatus, "Control key is required.", true);
+          return;
+        }
+        controlKey = value;
+        localStorage.setItem("artpulse_control_api_key", value);
+        setMeta(authStatus, "Control key saved.", false);
+        refresh().catch((err) => setMeta(authStatus, err.message, true));
+      }
+
+      function clearControlKey() {
+        controlKey = "";
+        localStorage.removeItem("artpulse_control_api_key");
+        controlKeyInput.value = "";
+        setMeta(authStatus, "Control key cleared.", false);
+      }
+
+      async function refresh() {
+        if (!controlKey) {
+          setMeta(authStatus, "Waiting for control key.", true);
+          return;
+        }
+        const stateResp = await controlFetch("/ops/control/state", { method: "GET", headers: { ...(controlKey ? {"x-api-key": controlKey} : {}) } });
+        const state = stateResp.state || {};
+        const model = state.model || {};
+        const rollout = state.rollout || {};
+        setText("primaryUri", model.primary_uri || "not loaded");
+        setText("secondaryUri", model.secondary_uri || "none");
+        setText("rolloutModeNow", rollout.mode || "single");
+        setText("secondaryPercentNow", `secondary: ${(rollout.secondary_percent ?? 0)}%`);
+        setText("runtimeOverrides", JSON.stringify(state.runtime_overrides || {}, null, 2));
+
+        const auditResp = await controlFetch("/ops/control/audit?limit=30", { method: "GET", headers: { ...(controlKey ? {"x-api-key": controlKey} : {}) } });
+        const rows = document.getElementById("auditRows");
+        rows.innerHTML = "";
+        (auditResp.events || []).slice().reverse().forEach((evt) => {
+          const tr = document.createElement("tr");
+          const ts = evt.timestamp ? new Date(evt.timestamp).toLocaleString() : "unknown";
+          tr.innerHTML = `<td>${ts}</td><td>${evt.actor || "-"}</td><td>${evt.action || "-"}</td><td>${evt.status || "-"}</td><td>${evt.path || "-"}</td>`;
+          rows.appendChild(tr);
+        });
+      }
+
+      async function applyRollout() {
+        const payload = {
+          mode: document.getElementById("modeInput").value,
+          reload_model: true,
+          note: "control-panel"
+        };
+        const canaryVal = document.getElementById("canaryInput").value;
+        const bgVal = document.getElementById("blueGreenInput").value;
+        const candidate = document.getElementById("candidateUriInput").value;
+        const activeColor = document.getElementById("activeColorInput").value;
+        if (canaryVal !== "") payload.canary_percent = Number(canaryVal);
+        if (bgVal !== "") payload.blue_green_percent = Number(bgVal);
+        if (candidate !== "") payload.candidate_model_uri = candidate.trim();
+        if (activeColor !== "") payload.active_color = activeColor;
+
+        const resp = await controlFetch("/ops/control/rollout", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        setMeta(controlStatus, `Rollout updated (${resp.status}).`, false);
+        await refresh();
+      }
+
+      async function reloadModel() {
+        const resp = await controlFetch("/ops/control/reload-model", { method: "POST", body: "{}" });
+        setMeta(controlStatus, `Model reloaded (${resp.status}).`, false);
+        await refresh();
+      }
+
+      async function emergencyRollback() {
+        const payload = { force_single_mode: false, reload_model: true, note: "control-panel emergency rollback" };
+        const resp = await controlFetch("/ops/control/emergency-rollback", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        setMeta(controlStatus, `Emergency rollback applied (${resp.status}).`, false);
+        await refresh();
+      }
+
+      async function promotePrimary() {
+        const source = document.getElementById("promoteSourceInput").value.trim();
+        const payload = {
+          source_model_uri: source || null,
+          clear_candidate_model_uri: true,
+          reload_model: true,
+          note: "control-panel promote"
+        };
+        const resp = await controlFetch("/ops/control/promote-primary", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        setMeta(controlStatus, `Promoted to primary (${resp.status}).`, false);
+        await refresh();
+      }
+
+      async function runGate(autoRollback) {
+        const payload = {
+          p95_latency_ms_max: Number(document.getElementById("p95MaxInput").value),
+          error_rate_max: Number(document.getElementById("errorMaxInput").value),
+          drift_score_max: Number(document.getElementById("driftMaxInput").value),
+          min_request_count: Number(document.getElementById("minReqInput").value),
+          auto_rollback_on_fail: autoRollback,
+          note: autoRollback ? "control-panel gate+rollback" : "control-panel gate"
+        };
+        const resp = await controlFetch("/ops/control/gate-check", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        const gate = resp.gate || {};
+        const observed = gate.observed || {};
+        const summary = `passed=${Boolean(gate.passed)} | req=${observed.request_count ?? 0} | p95=${(observed.p95_latency_ms ?? 0)}ms | 5xx=${(observed.error_rate ?? 0)} | drift=${(observed.drift_score ?? 0)}`;
+        setMeta(gateResult, summary, !Boolean(gate.passed));
+        await refresh();
+      }
+
+      async function boot() {
+        document.getElementById("saveControlKey").addEventListener("click", saveControlKey);
+        document.getElementById("clearControlKey").addEventListener("click", clearControlKey);
+        document.getElementById("applyRolloutBtn").addEventListener("click", () => applyRollout().catch((err) => setMeta(controlStatus, err.message, true)));
+        document.getElementById("reloadBtn").addEventListener("click", () => reloadModel().catch((err) => setMeta(controlStatus, err.message, true)));
+        document.getElementById("rollbackBtn").addEventListener("click", () => emergencyRollback().catch((err) => setMeta(controlStatus, err.message, true)));
+        document.getElementById("promoteBtn").addEventListener("click", () => promotePrimary().catch((err) => setMeta(controlStatus, err.message, true)));
+        document.getElementById("runGateBtn").addEventListener("click", () => runGate(false).catch((err) => setMeta(gateResult, err.message, true)));
+        document.getElementById("runGateRollbackBtn").addEventListener("click", () => runGate(true).catch((err) => setMeta(gateResult, err.message, true)));
+
+        if (controlKey) {
+          try {
+            await refresh();
+          } catch (err) {
+            setMeta(authStatus, err.message, true);
+          }
+        }
+        refreshTimer = setInterval(() => {
+          refresh().catch((err) => setMeta(authStatus, err.message, true));
         }, 15000);
       }
 
